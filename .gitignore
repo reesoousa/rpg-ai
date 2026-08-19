@@ -1,0 +1,29 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build
+dist/
+dist-ssr/
+*.local
+
+# env / segredos — NUNCA versionar
+.env
+.env.*
+!.env.example
+
+# supabase
+supabase/.temp/
+supabase/.branches/
+
+# editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
