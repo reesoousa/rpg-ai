@@ -46,6 +46,8 @@ interface Corpo {
   rulebook_id?: string
   /** Opcional: publica o digest em systems.rules_digest ao terminar. */
   publish?: boolean
+  /** Por padrao o PDF e apagado apos a ingestao. true mantem o arquivo. */
+  keep_file?: boolean
 }
 
 function bytesParaBase64(bytes: Uint8Array): string {
@@ -76,6 +78,16 @@ Deno.serve(async (req) => {
       .eq('id', rulebookId)
       .single()
     if (!livro) throw new RespostaDeErro(404, 'Livro nao encontrado.')
+
+    // O PDF e apagado apos a primeira ingestao. Reingerir exige subir de novo,
+    // e o erro precisa dizer isso em vez de reclamar de arquivo ausente.
+    if (!livro.storage_path) {
+      throw new RespostaDeErro(
+        409,
+        'O PDF deste livro ja foi apagado apos a ingestao anterior. ' +
+          'Envie o arquivo novamente para reingerir.',
+      )
+    }
 
     // --- baixa do Storage
     const { data: arquivo, error: dlErro } = await ctx.comoServico.storage
@@ -128,8 +140,33 @@ Deno.serve(async (req) => {
         ingest_tokens_input: resultado.usage.promptTokens,
         ingest_tokens_output: tokensOut,
         ingested_at: new Date().toISOString(),
+        original_size_bytes: bytes.length,
       })
       .eq('id', rulebookId)
+
+    // --- apaga o PDF: o digest e o que importa daqui em diante.
+    //
+    // O plano free tem 1 GB de Storage e um livro come 20-40 MB. Guardar o
+    // arquivo depois de extrair as regras nao serve a nada — reingerir exigiria
+    // subir de novo, que e barato comparado a manter o arquivo parado.
+    let apagado = false
+    if (!corpo.keep_file) {
+      const { error: rmErro } = await ctx.comoServico.storage
+        .from('rulebooks')
+        .remove([livro.storage_path])
+
+      if (rmErro) {
+        // Nao e motivo para falhar: o digest ja esta salvo. Fica registrado
+        // para limpeza posterior.
+        console.error('falha ao apagar o PDF', livro.storage_path, rmErro.message)
+      } else {
+        apagado = true
+        await ctx.comoServico
+          .from('rulebooks')
+          .update({ storage_path: null, file_deleted_at: new Date().toISOString() })
+          .eq('id', rulebookId)
+      }
+    }
 
     if (corpo.publish) {
       await ctx.comoServico
@@ -151,6 +188,8 @@ Deno.serve(async (req) => {
       system_name: resultado.data.system_name ?? null,
       dice_notation: resultado.data.dice_notation ?? null,
       published: Boolean(corpo.publish),
+      file_deleted: apagado,
+      original_size_bytes: bytes.length,
       usage: {
         ...resultado.usage,
         estimated_from_pages: custoEstimado,

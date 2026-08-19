@@ -1,26 +1,39 @@
 import { NavLink } from 'react-router'
-import { Compass, Dices, LibraryBig, User } from 'lucide-react'
+import { Compass, LibraryBig, LogIn, Shield, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
-const items = [
-  { to: '/', label: 'Descobrir', Icon: Compass, end: true },
-  { to: '/dashboard', label: 'Campanhas', Icon: LibraryBig, end: false },
-  { to: '/jogar', label: 'Jogar', Icon: Dices, end: false },
-  { to: '/perfil', label: 'Perfil', Icon: User, end: false },
-]
+import { useAuth } from '@/features/auth/useAuth'
 
 /**
  * Ilha flutuante com glass. Blur so aqui e em sheets (regra 5) — nunca em card
  * sobre card. Item ativo e pill solido, como nas referencias.
+ *
+ * Os itens mudam com o login: sem sessao, nao faz sentido oferecer "Campanhas"
+ * para levar a uma tela de redirecionamento.
  */
 export function FloatingNav() {
+  const { session, role } = useAuth()
+
+  const itens = session
+    ? [
+        { to: '/', label: 'Descobrir', Icon: Compass, end: true },
+        { to: '/dashboard', label: 'Campanhas', Icon: LibraryBig, end: false },
+        ...(role === 'master'
+          ? [{ to: '/admin', label: 'Mestre', Icon: Shield, end: false }]
+          : []),
+        { to: '/perfil', label: 'Perfil', Icon: User, end: false },
+      ]
+    : [
+        { to: '/', label: 'Descobrir', Icon: Compass, end: true },
+        { to: '/entrar', label: 'Entrar', Icon: LogIn, end: false },
+      ]
+
   return (
     <nav
       aria-label="Navegacao principal"
-      className="fixed inset-x-0 bottom-0 z-50 flex justify-center pb-[max(1rem,env(safe-area-inset-bottom))]"
+      className="fixed inset-x-0 bottom-0 z-40 flex justify-center pb-[max(1rem,env(safe-area-inset-bottom))]"
     >
       <div className="bg-surface-2/80 shadow-2 flex items-center gap-1 rounded-full p-2 backdrop-blur-xl">
-        {items.map(({ to, label, Icon, end }) => (
+        {itens.map(({ to, label, Icon, end }) => (
           <NavLink
             key={to}
             to={to}
