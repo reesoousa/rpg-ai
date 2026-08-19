@@ -77,11 +77,26 @@ function safetySettings(): Array<{ category: string; threshold: string }> {
   return categories.map((category) => ({ category, threshold }))
 }
 
+/** Uma pagina de PDF equivale a 258 tokens de entrada. */
+export const TOKENS_POR_PAGINA_PDF = 258
+
+export type Part =
+  | { text: string }
+  | { inlineData: { mimeType: string; data: string } }
+
+export interface Conteudo {
+  role: 'user' | 'model'
+  /** Atalho para uma unica parte de texto. */
+  text?: string
+  /** Usado quando ha PDF ou imagem junto. Tem precedencia sobre `text`. */
+  parts?: Part[]
+}
+
 export interface GenerateOptions {
   model: string
   systemInstruction?: string
   /** Partes do prompt, da mais estavel para a mais volatil (ajuda o cache). */
-  contents: Array<{ role: 'user' | 'model'; text: string }>
+  contents: Conteudo[]
   responseSchema?: unknown
   temperature?: number
   maxOutputTokens?: number
@@ -117,7 +132,10 @@ function buildBody(opts: GenerateOptions, variant: ThinkingVariant): Record<stri
   }
 
   const body: Record<string, unknown> = {
-    contents: opts.contents.map((c) => ({ role: c.role, parts: [{ text: c.text }] })),
+    contents: opts.contents.map((c) => ({
+      role: c.role,
+      parts: c.parts ?? [{ text: c.text ?? '' }],
+    })),
     generationConfig,
     safetySettings: safetySettings(),
   }
@@ -220,4 +238,95 @@ export async function generateStructured<T>(opts: GenerateOptions): Promise<Gemi
     400,
     ultimoErro,
   )
+}
+
+// ---------------------------------------------------------------------------
+// Geracao de imagem.
+//
+// ATENCAO: a documentacao de image generation descreve a Interactions API
+// (POST /v1beta/interactions com response_format), que e diferente do
+// generateContent usado acima. Este caminho e o UNICO do projeto que nao foi
+// verificado contra a API real — os testes cobrem a montagem do payload e o
+// tratamento da resposta, com stub.
+//
+// A extracao da imagem tolera os dois formatos conhecidos (output_image da
+// Interactions API e inlineData de candidates, do generateContent), para nao
+// quebrar se o endpoint responder no formato antigo.
+// ---------------------------------------------------------------------------
+
+export interface ImageOptions {
+  model: string
+  prompt: string
+  /** 1:1, 3:2, 16:9, 9:16, ... */
+  aspectRatio?: string
+  /** 512px (0.5K) | 1K | 2K | 4K */
+  imageSize?: string
+  mimeType?: 'image/jpeg' | 'image/png'
+  signal?: AbortSignal
+}
+
+export interface ImageResult {
+  /** Bytes da imagem, ja decodificados de base64. */
+  bytes: Uint8Array
+  mimeType: string
+}
+
+function base64ParaBytes(b64: string): Uint8Array {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes
+}
+
+/** Procura a imagem nos dois formatos de resposta possiveis. */
+function extrairImagem(payload: Record<string, any>): { data: string; mimeType: string } | null {
+  const direto = payload.output_image ?? payload.outputImage
+  if (direto?.data) {
+    return { data: direto.data, mimeType: direto.mime_type ?? direto.mimeType ?? 'image/jpeg' }
+  }
+
+  const partes = payload.candidates?.[0]?.content?.parts ?? []
+  for (const p of partes) {
+    const inline = p.inlineData ?? p.inline_data
+    if (inline?.data) {
+      return { data: inline.data, mimeType: inline.mimeType ?? inline.mime_type ?? 'image/jpeg' }
+    }
+  }
+  return null
+}
+
+export async function generateImage(opts: ImageOptions): Promise<ImageResult> {
+  const base = Deno.env.get('GEMINI_API_BASE') ?? API_BASE
+  const mimeType = opts.mimeType ?? 'image/jpeg'
+
+  const res = await fetch(`${base}/interactions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-goog-api-key': apiKey(),
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      input: [{ type: 'text', text: opts.prompt }],
+      response_format: {
+        type: 'image',
+        mime_type: mimeType,
+        aspect_ratio: opts.aspectRatio ?? '16:9',
+        image_size: opts.imageSize ?? '1K',
+      },
+    }),
+    signal: opts.signal ?? null,
+  })
+
+  if (!res.ok) {
+    throw new GeminiError(`Geracao de imagem respondeu ${res.status}.`, res.status, await res.text())
+  }
+
+  const payload = await res.json()
+  const imagem = extrairImagem(payload)
+  if (!imagem) {
+    throw new GeminiError('Resposta de imagem sem dados reconheciveis.', 502, payload)
+  }
+
+  return { bytes: base64ParaBytes(imagem.data), mimeType: imagem.mimeType }
 }

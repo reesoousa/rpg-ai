@@ -15,7 +15,8 @@
     "db:push": "supabase db push",
     "fn:serve": "supabase functions serve --env-file supabase/functions/.env.local",
     "stub:gemini": "node scripts/gemini-stub.mjs",
-    "test:e2e": "node scripts/test-play-turn.mjs"
+    "test:e2e": "node scripts/test-play-turn.mjs",
+    "test:base": "node scripts/test-base.mjs"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.3.0",

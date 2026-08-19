@@ -93,7 +93,11 @@ pnpm fn:serve
 Depois, com as credenciais locais no ambiente:
 
 ```bash
-pnpm test:e2e
+pnpm test:e2e     # play-turn
+```
+
+```bash
+pnpm test:base    # start-campaign, wizard, ingest, extract, scene
 ```
 
 O stub responde no formato do Gemini **e valida o payload** que a function
