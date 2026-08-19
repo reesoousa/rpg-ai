@@ -1,6 +1,11 @@
 // Utilitarios de HTTP compartilhados pelas functions.
 
-import { GeminiBlockedError, GeminiError, GeminiSemSaidaError } from './gemini.ts'
+import {
+  GeminiBlockedError,
+  GeminiError,
+  GeminiSemSaidaError,
+  GeminiSobrecargaError,
+} from './gemini.ts'
 
 /**
  * Origens permitidas. Em producao o app roda no GitHub Pages; em dev, no Vite.
@@ -76,6 +81,14 @@ export function erroDoModelo(req: Request, e: unknown, acao: string): Response |
       `O provedor interrompeu a geracao (${e.finishReason}). Tente reformular.`,
       422,
     )
+  }
+
+  // 503 sobreviveu a tres tentativas. Nao ha o que o usuario reformule, e
+  // chamar isso de "falha ao gerar" manda procurar problema onde nao tem.
+  // 503 tambem e o status certo de volta: e retentavel, nao e erro do cliente.
+  if (e instanceof GeminiSobrecargaError) {
+    console.error('gemini/sobrecarga', e.status, e.tentativas)
+    return erro(req, e.message, 503)
   }
 
   if (e instanceof GeminiSemSaidaError) {

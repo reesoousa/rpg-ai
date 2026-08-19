@@ -20,23 +20,59 @@
 | Painel do mestre | Sistemas, aventuras e livros, com upload de capa |
 | Vitrine | Lista sistemas e aventuras publicados |
 | CI/CD | GitHub Actions publica no Pages a cada merge em `main` |
-| Testes | 20 de RLS, 33 do turno, 73 da base — todos contra Supabase local |
+| Testes | 29 do cliente Gemini (sem Docker), 20 de RLS, 33 do turno, 73 da base |
 
-## Nao verificado com o Gemini real
+## A causa das falhas de IA — MEDIDA
 
-> Ha uma sonda para isto: `node scripts/probe-gemini.mjs`. Ela roda na maquina
-> do dono, com a chave no ambiente, e a saida e filtrada para nunca conter a
-> chave. Responde as tres duvidas abaixo com fato.
->
-> O que mudou no cliente enquanto a resposta nao vem:
-> - o teto de saida padrao subiu de 2048 para 4096, porque thinking sai da
->   MESMA cota do texto e o teto antigo podia estourar antes da resposta;
-> - `200 OK` com texto vazio deixou de virar "conteudo vazio" e passa a tentar
->   a proxima variante de thinking, terminando em `GeminiSemSaidaError` com
->   mensagem que diz o que aconteceu;
-> - toda falha do provedor chega ao app com o codigo de razao
->   (`NOT_FOUND`, `RESOURCE_EXHAUSTED`, `INVALID_ARGUMENT`, ...) em vez de
->   "Falha ao gerar" — ver `erroDoModelo` em `_shared/http.ts`.
+`pnpm probe:gemini` rodou contra a API real. O resultado:
+
+| O que se achava | O que a API respondeu |
+|-----------------|-----------------------|
+| modelos podiam nao existir | os tres existem e a chave alcanca todos |
+| `generationConfig.thinkingLevel` | **400** `Unknown name "thinkingLevel"` — o campo nao existe |
+| — | `thinkingConfig.thinkingBudget` -> **200 STOP**, resposta completa |
+| — | `gemini-3.7-flash` -> **503 em metade das chamadas**, "high demand" |
+
+**A causa era o 503.** O cliente tratava qualquer status nao-400 como
+definitivo e lancava na hora, então um pico de demanda de segundos virava turno
+perdido. O wizard era a unica coisa que funcionava porque e a unica function que
+usa `gemini-3.1-flash-lite`, modelo pouco disputado — nao tinha nada a ver com
+o codigo dela.
+
+E o `thinkingLevel` invalido piorava: toda chamada com thinking queimava uma
+requisicao num 400 garantido antes de tentar a forma boa, multiplicando as
+chances de esbarrar num 503 nas tentativas seguintes.
+
+Corrigido:
+
+- `thinkingConfig.thinkingBudget` e a primeira tentativa (niveis do CLAUDE.md
+  viram orcamento: `low` = 512, `medium` = 2048)
+- **retry com espera crescente em 429 e 5xx**, tres tentativas. 400 e 403 nao
+  sao repetidos: payload errado e chave errada nao melhoram esperando
+- 503 esgotado vira `GeminiSobrecargaError` -> HTTP 503 com "esta
+  sobrecarregado, costuma passar em alguns segundos", em vez de "falha ao gerar"
+- teto de saida 2048 -> 4096: thinking sai da MESMA cota do texto
+- `200` com texto vazio tenta a variante seguinte, e termina em
+  `GeminiSemSaidaError` dizendo que o teto estourou
+- toda falha do provedor chega ao app com o codigo de razao (`NOT_FOUND`,
+  `RESOURCE_EXHAUSTED`, `PERMISSION_DENIED`, ...) — `erroDoModelo` em
+  `_shared/http.ts`
+
+Coberto por `pnpm test:gemini`: 29 verificacoes contra um servidor local
+programavel, sem Docker e sem chave. Era o teste que faltava — o stub sempre
+responde 200, então nenhum teste via o cliente receber 503.
+
+### O que ainda nao foi verificado
+
+1. **`generate-scene`.** O caminho de imagem (`POST /v1beta/interactions`) segue
+   sem nenhuma chamada real. `pnpm probe:gemini --image` testa os dois formatos
+   possiveis, mas custa mais que os testes de texto
+2. **A qualidade da narrativa.** O `SYSTEM_INSTRUCTION` nunca foi lido por um
+   modelo de verdade
+3. **Se `gemini-3.7-flash` serve como padrao.** O retry cobre o 503 comum, mas
+   metade das chamadas falhando na primeira tentativa custa latencia. A secao 5
+   da sonda mede a taxa por modelo; trocar e o secret `GEMINI_MODEL_TURN`, sem
+   commit
 
 
 Todo o teste automatizado usa um **stub** que valida o payload mas nao chama a
@@ -80,11 +116,10 @@ Duas coisas alem disso:
 ## Falta construir
 
 ### Alto valor
-- **Confirmar a integracao com o Gemini real.** Rodar
-  `node scripts/probe-gemini.mjs` com a chave no ambiente: a sonda diz quais
-  modelos a chave alcanca, qual variante de thinking o `generateContent` aceita
-  e se `maxOutputTokens` sobra para o texto depois do raciocinio. Enquanto isso
-  nao roda, a causa das falhas de IA em producao e hipotese
+- **Deploy das Edge Functions.** As correcoes de retry e thinking so valem em
+  producao depois de `supabase functions deploy` — o Actions publica o Pages,
+  nao as functions
+- **Decidir o modelo do turno com o dado da secao 5 da sonda**
 - **Paginacao do historico.** Hoje carrega os ultimos 40 turnos e para. Falta
   "carregar anterior" (sem virtualizacao, para nao quebrar selecao de texto)
 - **Pausar, finalizar e apagar campanha.** O `status` existe no banco e a policy

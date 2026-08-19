@@ -114,12 +114,22 @@ systems.cover_path does not exist`), reaplique as migrations:
 pnpm supabase db reset
 ```
 
-O stub nao chama a API. Para saber o que a API REAL aceita — quais modelos a
-chave alcanca, qual campo de thinking o `generateContent` entende, se
-`maxOutputTokens` sobra para o texto depois do raciocinio:
+Testar o cliente do Gemini — retry, recuo de thinking, resposta vazia — sem
+Docker e sem chave, contra um servidor local programavel. Roda em segundos:
 
 ```bash
-node scripts/probe-gemini.mjs
+pnpm test:gemini
+```
+
+Este e o teste que faltava. O stub sempre responde 200, então nenhum teste
+exercitava o cliente recebendo 503, e foi exatamente isso que derrubou a IA em
+producao.
+
+O stub nao chama a API. Para saber o que a API REAL aceita e qual modelo de fato
+atende:
+
+```bash
+pnpm probe:gemini
 ```
 
 A chave sai do ambiente (`GEMINI_API_KEY`) e a saida e filtrada: nenhuma linha
@@ -148,6 +158,22 @@ No lugar dele:
 
 Cache explicito continua util para uma sessao especifica com TTL curto, mas
 como excecao deliberada.
+
+**O campo de thinking do `generateContent` e
+`generationConfig.thinkingConfig.thinkingBudget`** — medido, nao deduzido.
+`thinkingLevel` no topo do `generationConfig` devolve
+`400 Unknown name "thinkingLevel"`. Os niveis do quadro acima viram orcamento de
+tokens em `_shared/gemini.ts` (`low` = 512, `medium` = 2048), porque a cobranca
+de thinking sai da mesma cota do output e o teto e o mesmo controle na unidade
+que a API entende.
+
+**`gemini-3.7-flash` recusa atender com frequencia.** A sonda mediu 503 "This
+model is currently experiencing high demand" em metade das chamadas. O cliente
+repete em 429 e 5xx, tres tentativas com espera crescente; 403 e 400 nao sao
+repetidos, porque chave errada e payload errado nao melhoram esperando. Se a
+recusa persistir, trocar o modelo do turno nao exige commit: e o secret
+`GEMINI_MODEL_TURN` da Edge Function. Rode `pnpm probe:gemini` para ver a taxa
+por modelo antes de decidir.
 
 **Safety settings** ficam em `OFF` nas cinco categorias configuraveis. Duas
 ressalvas: o provedor mantem barreiras que nao se desligam por parametro (o
