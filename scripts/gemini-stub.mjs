@@ -76,6 +76,8 @@ const RESPOSTAS = {
   },
 
   extracao: {
+    title: 'O Sino de Vale Cinza',
+    synopsis: 'O filho do prefeito desapareceu e o moinho guarda a resposta.',
     plot_digest:
       'A aventura comeca com o desaparecimento do filho do prefeito. Se o jogador nao ' +
       'agir em tres dias, o corpo aparece no rio e a cidade fecha os portoes.',
@@ -101,7 +103,12 @@ const RESPOSTAS = {
         summary: 'Metade encontrada no moinho.',
         data: [],
       },
-      { kind: 'event', name: 'O corpo no rio', summary: 'Acontece no terceiro dia.', data: [] },
+      {
+        kind: 'event',
+        name: 'O corpo no rio',
+        summary: 'Acontece no terceiro dia.',
+        data: [],
+      },
     ],
   },
 
@@ -130,24 +137,32 @@ function validar(body, tipo) {
   const cfg = body.generationConfig ?? {}
 
   if (cfg.responseMimeType !== 'application/json') {
-    problemas.push(`responseMimeType deveria ser application/json, veio ${cfg.responseMimeType}`)
+    problemas.push(
+      `responseMimeType deveria ser application/json, veio ${cfg.responseMimeType}`,
+    )
   }
   if (!cfg.responseSchema) problemas.push('falta responseSchema')
   if (!body.systemInstruction) problemas.push('falta systemInstruction')
 
   const safety = body.safetySettings ?? []
   if (safety.length < 5) problemas.push(`safetySettings tem ${safety.length}, esperava 5`)
-  const ligadas = safety.filter((s) => s.threshold !== 'OFF' && s.threshold !== 'BLOCK_NONE')
+  const ligadas = safety.filter(
+    (s) => s.threshold !== 'OFF' && s.threshold !== 'BLOCK_NONE',
+  )
   if (ligadas.length) {
-    problemas.push(`categorias nao liberadas: ${ligadas.map((s) => s.category).join(', ')}`)
+    problemas.push(
+      `categorias nao liberadas: ${ligadas.map((s) => s.category).join(', ')}`,
+    )
   }
 
   const conteudos = body.contents ?? []
   if (tipo === 'turno') {
     const t = conteudos.map((c) => c.parts?.[0]?.text ?? '')
     if (t.length !== 3) problemas.push(`turno esperava 3 partes, veio ${t.length}`)
-    if (t[0] && !t[0].includes('# sistema.md')) problemas.push('parte 1 deveria ser sistema.md')
-    if (t[1] && !t[1].includes('# personagem.md')) problemas.push('parte 2 deveria ser personagem.md')
+    if (t[0] && !t[0].includes('# sistema.md'))
+      problemas.push('parte 1 deveria ser sistema.md')
+    if (t[1] && !t[1].includes('# personagem.md'))
+      problemas.push('parte 2 deveria ser personagem.md')
     if (t[2] && !t[2].includes('# historico_recente.md')) {
       problemas.push('parte 3 deveria ser historico_recente.md')
     }
@@ -156,8 +171,23 @@ function validar(body, tipo) {
   if (tipo === 'digest') {
     const partes = conteudos.flatMap((c) => c.parts ?? [])
     const pdf = partes.find((p) => p.inlineData?.mimeType === 'application/pdf')
-    if (!pdf) problemas.push('ingestao deveria enviar PDF como inlineData application/pdf')
+    if (!pdf)
+      problemas.push('ingestao deveria enviar PDF como inlineData application/pdf')
     else if (!pdf.inlineData.data?.length) problemas.push('PDF enviado sem dados base64')
+  }
+
+  if (tipo === 'extracao') {
+    // A extracao aceita texto OU PDF. Quando vem inlineData, o unico mimeType
+    // valido e PDF: qualquer outro seria bug de montagem do payload.
+    const inline = conteudos.flatMap((c) => c.parts ?? []).filter((p) => p.inlineData)
+    for (const p of inline) {
+      if (p.inlineData.mimeType !== 'application/pdf') {
+        problemas.push(
+          `extracao enviou inlineData ${p.inlineData.mimeType}, esperava PDF`,
+        )
+      }
+      if (!p.inlineData.data?.length) problemas.push('PDF da aventura sem dados base64')
+    }
   }
 
   return problemas
@@ -177,7 +207,13 @@ function responderTexto(req, res, cru) {
   writeFileSync(
     DESTINO_LOG,
     JSON.stringify(
-      { url: req.url, tipo, temChave: Boolean(req.headers['x-goog-api-key']), problemas, body },
+      {
+        url: req.url,
+        tipo,
+        temChave: Boolean(req.headers['x-goog-api-key']),
+        problemas,
+        body,
+      },
       null,
       2,
     ),
@@ -195,7 +231,10 @@ function responderTexto(req, res, cru) {
     res.writeHead(400, { 'content-type': 'application/json' })
     res.end(
       JSON.stringify({
-        error: { code: 400, message: 'Unknown name "thinkingLevel" in GenerationConfig.' },
+        error: {
+          code: 400,
+          message: 'Unknown name "thinkingLevel" in GenerationConfig.',
+        },
       }),
     )
     return
@@ -210,7 +249,9 @@ function responderTexto(req, res, cru) {
   res.writeHead(200, { 'content-type': 'application/json' })
   res.end(
     JSON.stringify({
-      candidates: [{ content: { parts: [{ text: JSON.stringify(dados) }] }, finishReason: 'STOP' }],
+      candidates: [
+        { content: { parts: [{ text: JSON.stringify(dados) }] }, finishReason: 'STOP' },
+      ],
       usageMetadata: {
         promptTokenCount: 3812,
         candidatesTokenCount: 640,
@@ -231,13 +272,21 @@ function responderImagem(req, res, cru) {
 
   const problemas = []
   if (!body.model) problemas.push('falta model')
-  if (!Array.isArray(body.input) || !body.input[0]?.text) problemas.push('falta input com texto')
-  if (body.response_format?.type !== 'image') problemas.push('response_format.type deveria ser image')
+  if (!Array.isArray(body.input) || !body.input[0]?.text)
+    problemas.push('falta input com texto')
+  if (body.response_format?.type !== 'image')
+    problemas.push('response_format.type deveria ser image')
 
   writeFileSync(
     DESTINO_LOG,
     JSON.stringify(
-      { url: req.url, tipo: 'imagem', temChave: Boolean(req.headers['x-goog-api-key']), problemas, body },
+      {
+        url: req.url,
+        tipo: 'imagem',
+        temChave: Boolean(req.headers['x-goog-api-key']),
+        problemas,
+        body,
+      },
       null,
       2,
     ),

@@ -30,7 +30,14 @@ export const WIZARD_SCHEMA = {
     character: {
       type: 'object',
       description: 'Preencher apenas quando ready for true.',
-      propertyOrdering: ['name', 'concept', 'hp_max', 'attributes', 'skills', 'inventory'],
+      propertyOrdering: [
+        'name',
+        'concept',
+        'hp_max',
+        'attributes',
+        'skills',
+        'inventory',
+      ],
       properties: {
         name: { type: 'string' },
         concept: { type: 'string', description: 'Uma linha: quem e e o que quer.' },
@@ -63,7 +70,13 @@ export interface WizardResponse {
 // ---------------------------------------------------------------------------
 export const ABERTURA_SCHEMA = {
   type: 'object',
-  propertyOrdering: ['narrative', 'location', 'location_description', 'weather', 'present_npcs'],
+  propertyOrdering: [
+    'narrative',
+    'location',
+    'location_description',
+    'weather',
+    'present_npcs',
+  ],
   properties: {
     narrative: {
       type: 'string',
@@ -92,8 +105,20 @@ export interface AberturaResponse {
 // ---------------------------------------------------------------------------
 export const EXTRACAO_SCHEMA = {
   type: 'object',
-  propertyOrdering: ['plot_digest', 'entities'],
+  propertyOrdering: ['title', 'synopsis', 'plot_digest', 'entities'],
   properties: {
+    // Extraindo de PDF, o mestre nao digitou nada: titulo e sinopse vem do
+    // proprio documento. Com texto colado ele ja tem os dois e a function
+    // preserva o que estiver preenchido.
+    title: {
+      type: 'string',
+      description: 'Titulo da aventura como aparece no documento.',
+    },
+    synopsis: {
+      type: 'string',
+      description:
+        'Sinopse curta para vitrine, de duas a tres frases, sem revelar reviravolta.',
+    },
     plot_digest: {
       type: 'string',
       description:
@@ -128,6 +153,8 @@ export const EXTRACAO_SCHEMA = {
 } as const
 
 export interface ExtracaoResponse {
+  title?: string
+  synopsis?: string
   plot_digest: string
   entities: Array<{
     kind: 'location' | 'npc' | 'item' | 'faction' | 'event'

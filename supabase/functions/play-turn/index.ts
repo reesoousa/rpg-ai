@@ -8,17 +8,23 @@
 // nosso, mas tambem nao consegue disparar chamadas sem serem contadas.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { erro, json, preflight } from '../_shared/http.ts'
-import { GeminiBlockedError, GeminiError, generateStructured } from '../_shared/gemini.ts'
+import { erro, erroDoModelo, json, preflight } from '../_shared/http.ts'
+import { generateStructured } from '../_shared/gemini.ts'
 import {
   JANELA_DE_HISTORICO,
+  MAX_ENTIDADES_NO_PROMPT,
   SYSTEM_INSTRUCTION,
   montarPrompt,
+  type Entidade,
   type EstadoMundo,
   type Personagem,
   type TurnoAnterior,
 } from '../_shared/context.ts'
-import { TURN_RESPONSE_SCHEMA, sanitizeDelta, type TurnResponse } from '../_shared/turn-schema.ts'
+import {
+  TURN_RESPONSE_SCHEMA,
+  sanitizeDelta,
+  type TurnResponse,
+} from '../_shared/turn-schema.ts'
 
 const MODELO_PADRAO = 'gemini-3.7-flash'
 // Thinking e cobrado como output; para narrar, "low" entrega sem inflar a conta.
@@ -88,12 +94,19 @@ Deno.serve(async (req) => {
   if (campanha.status !== 'active') return erro(req, 'Esta campanha nao esta ativa.', 409)
 
   // --- quota ANTES do modelo
-  const { data: restante, error: quotaErro } = await comoServico.rpc('consume_turn_quota', {
-    p_user: userId,
-  })
+  const { data: restante, error: quotaErro } = await comoServico.rpc(
+    'consume_turn_quota',
+    {
+      p_user: userId,
+    },
+  )
   if (quotaErro) {
     const limite = /Limite diario/.test(quotaErro.message)
-    return erro(req, limite ? quotaErro.message : 'Falha ao verificar quota.', limite ? 429 : 500)
+    return erro(
+      req,
+      limite ? quotaErro.message : 'Falha ao verificar quota.',
+      limite ? 429 : 500,
+    )
   }
 
   const devolverQuota = async () => {
@@ -102,28 +115,43 @@ Deno.serve(async (req) => {
 
   try {
     // --- estado
-    const [sistemaRes, aventuraRes, personagemRes, mundoRes, historicoRes] = await Promise.all([
-      comoServico
-        .from('systems')
-        .select('name, rules_digest')
-        .eq('id', campanha.system_id)
-        .single(),
-      campanha.adventure_id
-        ? comoServico
-            .from('adventures')
-            .select('title, synopsis')
-            .eq('id', campanha.adventure_id)
-            .single()
-        : Promise.resolve({ data: null, error: null }),
-      comoUsuario.from('characters').select('*').eq('campaign_id', campaignId).single(),
-      comoUsuario.from('world_state').select('*').eq('campaign_id', campaignId).single(),
-      comoUsuario
-        .from('turns')
-        .select('seq, turn_type, player_input, narrative')
-        .eq('campaign_id', campaignId)
-        .order('seq', { ascending: false })
-        .limit(JANELA_DE_HISTORICO),
-    ])
+    const [sistemaRes, aventuraRes, entidadesRes, personagemRes, mundoRes, historicoRes] =
+      await Promise.all([
+        comoServico
+          .from('systems')
+          .select('name, rules_digest')
+          .eq('id', campanha.system_id)
+          .single(),
+        // plot_digest e adventure_entities entram no prompt: sem eles o Mestre
+        // narra uma aventura pronta sabendo apenas o titulo e a sinopse.
+        campanha.adventure_id
+          ? comoServico
+              .from('adventures')
+              .select('title, synopsis, plot_digest')
+              .eq('id', campanha.adventure_id)
+              .single()
+          : Promise.resolve({ data: null, error: null }),
+        campanha.adventure_id
+          ? comoServico
+              .from('adventure_entities')
+              .select('kind, name, summary, data')
+              .eq('adventure_id', campanha.adventure_id)
+              .order('kind')
+              .limit(MAX_ENTIDADES_NO_PROMPT)
+          : Promise.resolve({ data: [], error: null }),
+        comoUsuario.from('characters').select('*').eq('campaign_id', campaignId).single(),
+        comoUsuario
+          .from('world_state')
+          .select('*')
+          .eq('campaign_id', campaignId)
+          .single(),
+        comoUsuario
+          .from('turns')
+          .select('seq, turn_type, player_input, narrative')
+          .eq('campaign_id', campaignId)
+          .order('seq', { ascending: false })
+          .limit(JANELA_DE_HISTORICO),
+      ])
 
     if (!personagemRes.data) {
       await devolverQuota()
@@ -140,6 +168,7 @@ Deno.serve(async (req) => {
     const partes = montarPrompt({
       sistema: sistemaRes.data ?? { name: 'Sistema desconhecido' },
       aventura: aventuraRes.data,
+      entidades: (entidadesRes.data ?? []) as Entidade[],
       personagem,
       mundo,
       historico: (historicoRes.data ?? []) as TurnoAnterior[],
@@ -160,7 +189,7 @@ Deno.serve(async (req) => {
       responseSchema: TURN_RESPONSE_SCHEMA,
       thinkingLevel: Deno.env.get('GEMINI_THINKING_LEVEL') ?? THINKING_PADRAO,
       temperature: Number(Deno.env.get('GEMINI_TEMPERATURE') ?? '0.95'),
-      maxOutputTokens: Number(Deno.env.get('GEMINI_MAX_OUTPUT') ?? '2048'),
+      maxOutputTokens: Number(Deno.env.get('GEMINI_MAX_OUTPUT') ?? '4096'),
     })
 
     const delta = sanitizeDelta(resultado.data.state_delta)
@@ -241,18 +270,8 @@ Deno.serve(async (req) => {
     // O jogador nao paga por falha nossa.
     await devolverQuota()
 
-    if (e instanceof GeminiBlockedError) {
-      return erro(
-        req,
-        'O provedor interrompeu a geracao deste trecho. Tente reformular a acao.',
-        422,
-        { finish_reason: e.finishReason },
-      )
-    }
-    if (e instanceof GeminiError) {
-      console.error('gemini', e.status, e.message, e.detail)
-      return erro(req, 'Falha ao consultar o mestre.', 502)
-    }
+    const doModelo = erroDoModelo(req, e, 'consultar o mestre')
+    if (doModelo) return doModelo
     console.error('play-turn', e)
     return erro(req, 'Erro inesperado ao processar o turno.', 500)
   }

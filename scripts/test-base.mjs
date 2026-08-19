@@ -6,6 +6,8 @@
 //
 // Uso: node scripts/test-base.mjs
 
+import { readFileSync } from 'node:fs'
+
 const URL_BASE = process.env.SUPABASE_URL
 const ANON = process.env.SUPABASE_ANON_KEY
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -17,6 +19,32 @@ if (!URL_BASE || !ANON || !SERVICE) {
 
 const MESTRE = { email: 'mestre.base@teste.local', senha: 'senha-de-teste-12345' }
 const JOGADOR = { email: 'jogador.base@teste.local', senha: 'senha-de-teste-12345' }
+
+/**
+ * Ultimo payload que o stub recebeu.
+ *
+ * Existe para poder afirmar o que FOI ENVIADO ao modelo, nao apenas o que a
+ * function respondeu. Foi assim que a lacuna da aventura passou despercebida:
+ * a resposta vinha 200 e ninguem olhava que o prompt nao tinha as entidades.
+ */
+function ultimoPayload() {
+  const caminho = process.env.STUB_LOG ?? 'stub-last-request.json'
+  try {
+    return JSON.parse(readFileSync(caminho, 'utf-8'))
+  } catch {
+    return null
+  }
+}
+
+/** Todo o texto que foi para o modelo, concatenado. */
+function promptEnviado() {
+  const log = ultimoPayload()
+  const conteudos = log?.body?.contents ?? []
+  return conteudos
+    .flatMap((c) => c.parts ?? [])
+    .map((p) => p.text ?? '')
+    .join('\n')
+}
 
 let passou = 0
 let falhou = 0
@@ -46,7 +74,11 @@ const svc = (caminho, init = {}) =>
 const chamarFn = (nome, token, body) =>
   fetch(`${URL_BASE}/functions/v1/${nome}`, {
     method: 'POST',
-    headers: { apikey: ANON, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: {
+      apikey: ANON,
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
     body: JSON.stringify(body),
   })
 
@@ -120,7 +152,11 @@ async function main() {
     },
     body: pdfDeTeste(),
   })
-  verifica('PDF sobe para o bucket rulebooks', up.ok, `status ${up.status}: ${await up.clone().text()}`)
+  verifica(
+    'PDF sobe para o bucket rulebooks',
+    up.ok,
+    `status ${up.status}: ${await up.clone().text()}`,
+  )
 
   const [livro] = await (
     await svc('/rest/v1/rulebooks', {
@@ -135,7 +171,9 @@ async function main() {
     })
   ).json()
 
-  const negado = await chamarFn('ingest-rulebook', jogador.token, { rulebook_id: livro.id })
+  const negado = await chamarFn('ingest-rulebook', jogador.token, {
+    rulebook_id: livro.id,
+  })
   verifica('jogador comum recebe 403', negado.status === 403, `status ${negado.status}`)
 
   const ingest = await chamarFn('ingest-rulebook', mestre.token, {
@@ -143,39 +181,78 @@ async function main() {
     publish: true,
   })
   const ingestCorpo = await ingest.json().catch(() => ({}))
-  verifica('mestre ingere o livro', ingest.status === 200, `status ${ingest.status}: ${JSON.stringify(ingestCorpo).slice(0, 200)}`)
+  verifica(
+    'mestre ingere o livro',
+    ingest.status === 200,
+    `status ${ingest.status}: ${JSON.stringify(ingestCorpo).slice(0, 200)}`,
+  )
   verifica('devolve digest operacional', (ingestCorpo.digest ?? '').includes('2d6'))
-  verifica('estima custo pelas paginas (120 x 258)', ingestCorpo.usage?.estimated_from_pages === 30960, `veio ${ingestCorpo.usage?.estimated_from_pages}`)
+  verifica(
+    'estima custo pelas paginas (120 x 258)',
+    ingestCorpo.usage?.estimated_from_pages === 30960,
+    `veio ${ingestCorpo.usage?.estimated_from_pages}`,
+  )
 
   const [sisAtualizado] = await (
     await svc(`/rest/v1/systems?id=eq.${sistema.id}&select=rules_digest`)
   ).json()
-  verifica('publica o digest em systems.rules_digest', Boolean(sisAtualizado?.rules_digest))
+  verifica(
+    'publica o digest em systems.rules_digest',
+    Boolean(sisAtualizado?.rules_digest),
+  )
 
   const [livroAtualizado] = await (
     await svc(
       `/rest/v1/rulebooks?id=eq.${livro.id}&select=ingested_at,ingest_tokens_input,storage_path,file_deleted_at,original_size_bytes`,
     )
   ).json()
-  verifica('registra custo real da ingestao', livroAtualizado?.ingest_tokens_input === 3812)
+  verifica(
+    'registra custo real da ingestao',
+    livroAtualizado?.ingest_tokens_input === 3812,
+  )
   verifica('marca ingested_at', Boolean(livroAtualizado?.ingested_at))
 
   // --- o PDF nao deve ficar guardado ocupando Storage
-  verifica('reporta que apagou o arquivo', ingestCorpo.file_deleted === true, `veio ${ingestCorpo.file_deleted}`)
-  verifica('limpa o storage_path', livroAtualizado?.storage_path === null, `veio ${livroAtualizado?.storage_path}`)
+  verifica(
+    'reporta que apagou o arquivo',
+    ingestCorpo.file_deleted === true,
+    `veio ${ingestCorpo.file_deleted}`,
+  )
+  verifica(
+    'limpa o storage_path',
+    livroAtualizado?.storage_path === null,
+    `veio ${livroAtualizado?.storage_path}`,
+  )
   verifica('marca file_deleted_at', Boolean(livroAtualizado?.file_deleted_at))
-  verifica('guarda o tamanho original antes de apagar', livroAtualizado?.original_size_bytes > 0)
+  verifica(
+    'guarda o tamanho original antes de apagar',
+    livroAtualizado?.original_size_bytes > 0,
+  )
 
   const pdfSumiu = await fetch(`${URL_BASE}/storage/v1/object/rulebooks/${caminhoPdf}`, {
     headers: { apikey: SERVICE, authorization: `Bearer ${SERVICE}` },
   })
   // O Storage responde 400 para objeto ausente, nao 404.
-  verifica('PDF realmente saiu do bucket', pdfSumiu.status === 400 || pdfSumiu.status === 404, `status ${pdfSumiu.status}`)
+  verifica(
+    'PDF realmente saiu do bucket',
+    pdfSumiu.status === 400 || pdfSumiu.status === 404,
+    `status ${pdfSumiu.status}`,
+  )
 
-  const reingerir = await chamarFn('ingest-rulebook', mestre.token, { rulebook_id: livro.id })
+  const reingerir = await chamarFn('ingest-rulebook', mestre.token, {
+    rulebook_id: livro.id,
+  })
   const reingerirCorpo = await reingerir.json().catch(() => ({}))
-  verifica('reingerir sem arquivo da erro explicativo', reingerir.status === 409, `status ${reingerir.status}`)
-  verifica('mensagem explica que precisa subir de novo', /apagado/.test(reingerirCorpo.error ?? ''), reingerirCorpo.error)
+  verifica(
+    'reingerir sem arquivo da erro explicativo',
+    reingerir.status === 409,
+    `status ${reingerir.status}`,
+  )
+  verifica(
+    'mensagem explica que precisa subir de novo',
+    /apagado/.test(reingerirCorpo.error ?? ''),
+    reingerirCorpo.error,
+  )
 
   console.log('\n=== extract-adventure (so mestre) ===')
 
@@ -198,38 +275,159 @@ async function main() {
   })
   verifica('jogador comum recebe 403 na extracao', extNegado.status === 403)
 
-  const semTexto = await chamarFn('extract-adventure', mestre.token, { adventure_id: aventura.id })
-  verifica('recusa extrair sem source_text', semTexto.status === 409, `status ${semTexto.status}`)
+  const semTexto = await chamarFn('extract-adventure', mestre.token, {
+    adventure_id: aventura.id,
+  })
+  verifica(
+    'recusa extrair sem source_text',
+    semTexto.status === 409,
+    `status ${semTexto.status}`,
+  )
 
   const ext = await chamarFn('extract-adventure', mestre.token, {
     adventure_id: aventura.id,
     source_text: 'O filho do prefeito desapareceu. O moinho abandonado guarda pistas.',
   })
   const extCorpo = await ext.json().catch(() => ({}))
-  verifica('mestre extrai a aventura', ext.status === 200, `status ${ext.status}: ${JSON.stringify(extCorpo).slice(0, 200)}`)
-  verifica('grava 4 entidades', extCorpo.entities_count === 4, `veio ${extCorpo.entities_count}`)
-  verifica('agrupa por tipo', extCorpo.entities_by_kind?.npc === 1 && extCorpo.entities_by_kind?.location === 1)
+  verifica(
+    'mestre extrai a aventura',
+    ext.status === 200,
+    `status ${ext.status}: ${JSON.stringify(extCorpo).slice(0, 200)}`,
+  )
+  verifica(
+    'grava 4 entidades',
+    extCorpo.entities_count === 4,
+    `veio ${extCorpo.entities_count}`,
+  )
+  verifica(
+    'agrupa por tipo',
+    extCorpo.entities_by_kind?.npc === 1 && extCorpo.entities_by_kind?.location === 1,
+  )
   verifica('reporta que nao truncou', extCorpo.truncated === false)
 
   const entidades = await (
     await svc(`/rest/v1/adventure_entities?adventure_id=eq.${aventura.id}&select=*`)
   ).json()
   verifica('entidades persistidas no banco', entidades.length === 4)
+
+  console.log('\n=== extract-adventure a partir de PDF ===')
+
+  // Colar um modulo de aventura inteiro a mao nao e fluxo real: quem tem o
+  // material tem o arquivo. Este caminho le o PDF e apaga depois, como a
+  // ingestao de regras.
+  const pdfAventura = `adventures/${aventura.id}/modulo.pdf`
+  const upAventura = await fetch(
+    `${URL_BASE}/storage/v1/object/rulebooks/${pdfAventura}`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: SERVICE,
+        authorization: `Bearer ${SERVICE}`,
+        'content-type': 'application/pdf',
+        'x-upsert': 'true',
+      },
+      body: pdfDeTeste(),
+    },
+  )
+  verifica('PDF da aventura sobe ao bucket', upAventura.ok, `status ${upAventura.status}`)
+
+  // Sinopse vazia de proposito: a extracao deve sugerir uma.
+  await svc(`/rest/v1/adventures?id=eq.${aventura.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ synopsis: null }),
+  })
+
+  const extPdf = await chamarFn('extract-adventure', mestre.token, {
+    adventure_id: aventura.id,
+    source_pdf_path: pdfAventura,
+  })
+  const extPdfCorpo = await extPdf.json().catch(() => ({}))
+  verifica(
+    'extrai a aventura de um PDF',
+    extPdf.status === 200,
+    `status ${extPdf.status}: ${JSON.stringify(extPdfCorpo).slice(0, 200)}`,
+  )
+  verifica('reporta a fonte como pdf', extPdfCorpo.source === 'pdf', extPdfCorpo.source)
+  verifica(
+    'reporta o tamanho do PDF lido',
+    extPdfCorpo.pdf_bytes > 0,
+    `${extPdfCorpo.pdf_bytes}`,
+  )
+  verifica('sugere sinopse quando estava vazia', Boolean(extPdfCorpo.synopsis))
+
+  const promptExtracao = promptEnviado()
+  verifica(
+    'extracao por PDF nao manda texto colado como fonte',
+    !promptExtracao.includes('moinho abandonado guarda pistas'),
+  )
+
+  const aventuraDepois = await (
+    await svc(`/rest/v1/adventures?id=eq.${aventura.id}&select=synopsis,plot_digest`)
+  ).json()
+  verifica('sinopse sugerida gravada', Boolean(aventuraDepois[0]?.synopsis))
+  verifica(
+    'plot_digest gravado pela extracao de PDF',
+    Boolean(aventuraDepois[0]?.plot_digest),
+  )
+
+  verifica('PDF da aventura foi apagado', extPdfCorpo.pdf_deleted === true)
+  const pdfAventuraSumiu = await fetch(
+    `${URL_BASE}/storage/v1/object/rulebooks/${pdfAventura}`,
+    {
+      headers: { apikey: SERVICE, authorization: `Bearer ${SERVICE}` },
+    },
+  )
+  // O Storage responde 400 para objeto ausente, nao 404.
+  verifica(
+    'PDF da aventura nao esta mais no Storage',
+    pdfAventuraSumiu.status === 400 || pdfAventuraSumiu.status === 404,
+    `status ${pdfAventuraSumiu.status}`,
+  )
+
+  // Sinopse ja preenchida NAO deve ser sobrescrita pela extracao seguinte.
+  await svc(`/rest/v1/adventures?id=eq.${aventura.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ synopsis: 'Sinopse escrita a mao pelo mestre.' }),
+  })
+  await chamarFn('extract-adventure', mestre.token, {
+    adventure_id: aventura.id,
+    source_text: 'O filho do prefeito desapareceu de novo.',
+  })
+  const aventuraMantida = await (
+    await svc(`/rest/v1/adventures?id=eq.${aventura.id}&select=synopsis`)
+  ).json()
+  verifica(
+    'extracao nao sobrescreve sinopse escrita a mao',
+    aventuraMantida[0]?.synopsis === 'Sinopse escrita a mao pelo mestre.',
+    aventuraMantida[0]?.synopsis,
+  )
   const npc = entidades.find((e) => e.kind === 'npc')
-  verifica('pares viraram objeto no jsonb', npc?.data?.segredo?.includes('divida'), JSON.stringify(npc?.data))
+  verifica(
+    'pares viraram objeto no jsonb',
+    npc?.data?.segredo?.includes('divida'),
+    JSON.stringify(npc?.data),
+  )
 
   // reexecutar nao deve duplicar
   await chamarFn('extract-adventure', mestre.token, { adventure_id: aventura.id })
   const reexec = await (
     await svc(`/rest/v1/adventure_entities?adventure_id=eq.${aventura.id}&select=id`)
   ).json()
-  verifica('reexecutar substitui em vez de duplicar', reexec.length === 4, `veio ${reexec.length}`)
+  verifica(
+    'reexecutar substitui em vez de duplicar',
+    reexec.length === 4,
+    `veio ${reexec.length}`,
+  )
 
   console.log('\n=== character-wizard ===')
 
   const wiz = await chamarFn('character-wizard', jogador.token, { system_id: sistema.id })
   const wizCorpo = await wiz.json().catch(() => ({}))
-  verifica('wizard responde', wiz.status === 200, `status ${wiz.status}: ${JSON.stringify(wizCorpo).slice(0, 200)}`)
+  verifica(
+    'wizard responde',
+    wiz.status === 200,
+    `status ${wiz.status}: ${JSON.stringify(wizCorpo).slice(0, 200)}`,
+  )
   verifica('devolve pergunta', (wizCorpo.reply ?? '').length > 20)
   verifica('ainda nao esta pronto', wizCorpo.ready === false)
   verifica('nao devolve ficha antes da hora', wizCorpo.character === null)
@@ -238,7 +436,11 @@ async function main() {
     system_id: sistema.id,
     messages: Array.from({ length: 13 }, () => ({ role: 'user', text: 'oi' })),
   })
-  verifica('recusa conversa longa demais', wizLongo.status === 400, `status ${wizLongo.status}`)
+  verifica(
+    'recusa conversa longa demais',
+    wizLongo.status === 400,
+    `status ${wizLongo.status}`,
+  )
 
   console.log('\n=== start-campaign ===')
 
@@ -247,14 +449,22 @@ async function main() {
     title: 'Campanha X',
     character: { concept: 'sem nome' },
   })
-  verifica('recusa personagem sem nome', semNome.status === 400, `status ${semNome.status}`)
+  verifica(
+    'recusa personagem sem nome',
+    semNome.status === 400,
+    `status ${semNome.status}`,
+  )
 
   const hpInvalido = await chamarFn('start-campaign', jogador.token, {
     system_id: sistema.id,
     title: 'Campanha X',
     character: { name: 'Vera', concept: 'Mercenaria', hp_max: 0 },
   })
-  verifica('recusa hp_max invalido', hpInvalido.status === 400, `status ${hpInvalido.status}`)
+  verifica(
+    'recusa hp_max invalido',
+    hpInvalido.status === 400,
+    `status ${hpInvalido.status}`,
+  )
 
   const start = await chamarFn('start-campaign', jogador.token, {
     system_id: sistema.id,
@@ -270,51 +480,126 @@ async function main() {
     },
   })
   const startCorpo = await start.json().catch(() => ({}))
-  verifica('abre a campanha', start.status === 200, `status ${start.status}: ${JSON.stringify(startCorpo).slice(0, 300)}`)
+  verifica(
+    'abre a campanha',
+    start.status === 200,
+    `status ${start.status}: ${JSON.stringify(startCorpo).slice(0, 300)}`,
+  )
   verifica('devolve narrativa de abertura', (startCorpo.narrative ?? '').length > 80)
   verifica('abertura e o turno 1', startCorpo.seq === 1)
-  verifica('define o local inicial', startCorpo.location === 'Portao de Vale Cinza', startCorpo.location)
+  verifica(
+    'define o local inicial',
+    startCorpo.location === 'Portao de Vale Cinza',
+    startCorpo.location,
+  )
+
+  // --- a aventura tem de CHEGAR ao modelo, nao apenas existir no banco.
+  const promptAbertura = promptEnviado()
+  verifica(
+    'abertura leva a aventura no prompt',
+    promptAbertura.includes('# aventura.md'),
+    promptAbertura.slice(0, 200),
+  )
+  verifica(
+    'abertura leva o plot_digest no prompt',
+    promptAbertura.includes('desaparecimento do filho do prefeito'),
+  )
+  verifica(
+    'abertura leva as entidades extraidas no prompt',
+    promptAbertura.includes('Prefeito Aldric') &&
+      promptAbertura.includes('Moinho Abandonado'),
+  )
+  verifica(
+    'entidade leva os campos de data no prompt',
+    promptAbertura.includes('contraiu a divida no jogo'),
+  )
 
   const campaignId = startCorpo.campaign_id
   const turnos = await (
-    await svc(`/rest/v1/turns?campaign_id=eq.${campaignId}&select=turn_type,seq,narrative`)
+    await svc(
+      `/rest/v1/turns?campaign_id=eq.${campaignId}&select=turn_type,seq,narrative`,
+    )
   ).json()
-  verifica('turno gravado como opening', turnos[0]?.turn_type === 'opening', turnos[0]?.turn_type)
+  verifica(
+    'turno gravado como opening',
+    turnos[0]?.turn_type === 'opening',
+    turnos[0]?.turn_type,
+  )
 
   const mundo = await (
     await svc(`/rest/v1/world_state?campaign_id=eq.${campaignId}&select=*`)
   ).json()
-  verifica('estado do mundo criado', mundo[0]?.current_location === 'Portao de Vale Cinza')
+  verifica(
+    'estado do mundo criado',
+    mundo[0]?.current_location === 'Portao de Vale Cinza',
+  )
   verifica('npcs da abertura registrados', mundo[0]?.present_npcs?.length === 1)
 
   const ficha = await (
     await svc(`/rest/v1/characters?campaign_id=eq.${campaignId}&select=*`)
   ).json()
-  verifica('ficha criada com hp cheio', ficha[0]?.hp_current === 22 && ficha[0]?.hp_max === 22)
-  verifica('atributos convertidos de pares para objeto', ficha[0]?.attributes?.forca === '3', JSON.stringify(ficha[0]?.attributes))
+  verifica(
+    'ficha criada com hp cheio',
+    ficha[0]?.hp_current === 22 && ficha[0]?.hp_max === 22,
+  )
+  verifica(
+    'atributos convertidos de pares para objeto',
+    ficha[0]?.attributes?.forca === '3',
+    JSON.stringify(ficha[0]?.attributes),
+  )
 
   console.log('\n=== generate-scene ===')
 
-  const cenaAlheia = await chamarFn('generate-scene', mestre.token, { campaign_id: campaignId })
-  verifica('nao gera cena de campanha alheia', cenaAlheia.status === 404, `status ${cenaAlheia.status}`)
+  const cenaAlheia = await chamarFn('generate-scene', mestre.token, {
+    campaign_id: campaignId,
+  })
+  verifica(
+    'nao gera cena de campanha alheia',
+    cenaAlheia.status === 404,
+    `status ${cenaAlheia.status}`,
+  )
 
-  const cena = await chamarFn('generate-scene', jogador.token, { campaign_id: campaignId })
+  const cena = await chamarFn('generate-scene', jogador.token, {
+    campaign_id: campaignId,
+  })
   const cenaCorpo = await cena.json().catch(() => ({}))
-  verifica('gera a cena', cena.status === 200, `status ${cena.status}: ${JSON.stringify(cenaCorpo).slice(0, 300)}`)
-  verifica('prompt inclui o local do mundo', (cenaCorpo.prompt ?? '').includes('Portao de Vale Cinza'))
-  verifica('reporta quota de imagem', typeof cenaCorpo.quota?.images_remaining === 'number')
+  verifica(
+    'gera a cena',
+    cena.status === 200,
+    `status ${cena.status}: ${JSON.stringify(cenaCorpo).slice(0, 300)}`,
+  )
+  verifica(
+    'prompt inclui o local do mundo',
+    (cenaCorpo.prompt ?? '').includes('Portao de Vale Cinza'),
+  )
+  verifica(
+    'reporta quota de imagem',
+    typeof cenaCorpo.quota?.images_remaining === 'number',
+  )
 
   // --- a imagem volta na resposta, nao no Storage
   verifica('devolve a imagem em base64', (cenaCorpo.image_base64 ?? '').length > 50)
-  verifica('informa o mime type', (cenaCorpo.mime_type ?? '').startsWith('image/'), cenaCorpo.mime_type)
+  verifica(
+    'informa o mime type',
+    (cenaCorpo.mime_type ?? '').startsWith('image/'),
+    cenaCorpo.mime_type,
+  )
   verifica('informa o tamanho', cenaCorpo.size_bytes > 0)
-  verifica('nao devolve URL de storage', !('signed_url' in cenaCorpo) && !('storage_path' in cenaCorpo))
+  verifica(
+    'nao devolve URL de storage',
+    !('signed_url' in cenaCorpo) && !('storage_path' in cenaCorpo),
+  )
 
   const turnoComCena = await (
-    await svc(`/rest/v1/turns?campaign_id=eq.${campaignId}&select=seq,scene_prompt,scene_generated_at&order=seq`)
+    await svc(
+      `/rest/v1/turns?campaign_id=eq.${campaignId}&select=seq,scene_prompt,scene_generated_at&order=seq`,
+    )
   ).json()
   const turnoUltimo = turnoComCena[turnoComCena.length - 1]
-  verifica('guarda o prompt no turno', (turnoUltimo?.scene_prompt ?? '').includes('Portao de Vale Cinza'))
+  verifica(
+    'guarda o prompt no turno',
+    (turnoUltimo?.scene_prompt ?? '').includes('Portao de Vale Cinza'),
+  )
   verifica('marca quando gerou', Boolean(turnoUltimo?.scene_generated_at))
 
   console.log('\n=== regerar cena a partir do prompt guardado ===')
@@ -323,7 +608,11 @@ async function main() {
     regenerate_turn_seq: turnoUltimo.seq,
   })
   const regerarCorpo = await regerar.json().catch(() => ({}))
-  verifica('regera a cena', regerar.status === 200, `status ${regerar.status}: ${JSON.stringify(regerarCorpo).slice(0, 200)}`)
+  verifica(
+    'regera a cena',
+    regerar.status === 200,
+    `status ${regerar.status}: ${JSON.stringify(regerarCorpo).slice(0, 200)}`,
+  )
   verifica('marca como regerada', regerarCorpo.regenerated === true)
   verifica('reusa o MESMO prompt', regerarCorpo.prompt === turnoUltimo.scene_prompt)
 
@@ -331,18 +620,34 @@ async function main() {
     campaign_id: campaignId,
     regenerate_turn_seq: 99,
   })
-  verifica('recusa regerar turno inexistente', semCena.status === 404, `status ${semCena.status}`)
+  verifica(
+    'recusa regerar turno inexistente',
+    semCena.status === 404,
+    `status ${semCena.status}`,
+  )
 
-  const uso = await (await svc(`/rest/v1/usage_daily?user_id=eq.${jogador.id}&select=*`)).json()
+  const uso = await (
+    await svc(`/rest/v1/usage_daily?user_id=eq.${jogador.id}&select=*`)
+  ).json()
   // duas geracoes: a cena original e a regerada. Regerar custa quota.
-  verifica('cada geracao conta uma vez na quota', uso[0]?.images_count === 2, `images=${uso[0]?.images_count}`)
+  verifica(
+    'cada geracao conta uma vez na quota',
+    uso[0]?.images_count === 2,
+    `images=${uso[0]?.images_count}`,
+  )
 
   await svc(`/rest/v1/profiles?id=eq.${jogador.id}`, {
     method: 'PATCH',
     body: JSON.stringify({ daily_image_limit: 2 }),
   })
-  const cenaEstourada = await chamarFn('generate-scene', jogador.token, { campaign_id: campaignId })
-  verifica('429 ao estourar a quota de imagem', cenaEstourada.status === 429, `status ${cenaEstourada.status}`)
+  const cenaEstourada = await chamarFn('generate-scene', jogador.token, {
+    campaign_id: campaignId,
+  })
+  verifica(
+    '429 ao estourar a quota de imagem',
+    cenaEstourada.status === 429,
+    `status ${cenaEstourada.status}`,
+  )
 
   console.log('\n=== nada pesado ficou no Storage ===')
   const buckets = await fetch(`${URL_BASE}/storage/v1/bucket`, {
@@ -350,8 +655,16 @@ async function main() {
   })
   const listaBuckets = await buckets.json().catch(() => [])
   const nomes = Array.isArray(listaBuckets) ? listaBuckets.map((b) => b.id ?? b.name) : []
-  verifica('bucket de cenas nao existe mais', !nomes.includes('scenes'), `buckets: ${nomes.join(', ')}`)
-  verifica('bucket de livros continua (upload temporario)', nomes.includes('rulebooks'), `buckets: ${nomes.join(', ')}`)
+  verifica(
+    'bucket de cenas nao existe mais',
+    !nomes.includes('scenes'),
+    `buckets: ${nomes.join(', ')}`,
+  )
+  verifica(
+    'bucket de livros continua (upload temporario)',
+    nomes.includes('rulebooks'),
+    `buckets: ${nomes.join(', ')}`,
+  )
 
   console.log('\n===================================')
   console.log(` ${passou} passaram, ${falhou} falharam`)

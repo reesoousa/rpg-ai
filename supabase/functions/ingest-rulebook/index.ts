@@ -9,11 +9,10 @@
 // turno, no lugar do livro — e o que substitui o Context Caching explicito,
 // cujo armazenamento por hora sairia por ~US$ 144/mes.
 
-import { erro, json, preflight } from '../_shared/http.ts'
+import { erro, erroDoModelo, json, preflight } from '../_shared/http.ts'
 import {
-  GeminiBlockedError,
-  GeminiError,
   TOKENS_POR_PAGINA_PDF,
+  bytesParaBase64,
   generateStructured,
 } from '../_shared/gemini.ts'
 import { DIGEST_SCHEMA, type DigestResponse } from '../_shared/schemas.ts'
@@ -48,16 +47,6 @@ interface Corpo {
   publish?: boolean
   /** Por padrao o PDF e apagado apos a ingestao. true mantem o arquivo. */
   keep_file?: boolean
-}
-
-function bytesParaBase64(bytes: Uint8Array): string {
-  // Em blocos: String.fromCharCode com spread estoura a pilha em arquivos grandes.
-  let bin = ''
-  const BLOCO = 0x8000
-  for (let i = 0; i < bytes.length; i += BLOCO) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + BLOCO))
-  }
-  return btoa(bin)
 }
 
 Deno.serve(async (req) => {
@@ -197,13 +186,8 @@ Deno.serve(async (req) => {
     })
   } catch (e) {
     if (e instanceof RespostaDeErro) return erro(req, e.message, e.status, e.extra)
-    if (e instanceof GeminiBlockedError) {
-      return erro(req, 'O provedor interrompeu a leitura deste livro.', 422)
-    }
-    if (e instanceof GeminiError) {
-      console.error('gemini', e.status, e.message, e.detail)
-      return erro(req, 'Falha ao ler o livro.', 502)
-    }
+    const doModelo = erroDoModelo(req, e, 'ler o livro')
+    if (doModelo) return doModelo
     console.error('ingest-rulebook', e)
     return erro(req, 'Erro inesperado na ingestao.', 500)
   }
