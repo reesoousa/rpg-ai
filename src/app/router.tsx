@@ -59,16 +59,10 @@ export const router = createBrowserRouter(
           children: [
             {
               path: '/admin',
-              element: (
-                <PagePlaceholder
-                  title="Painel do mestre"
-                  planned={[
-                    'Upload de livros base em PDF',
-                    'Ingestao: PDF vira resumo operacional das regras',
-                    'Fabrica de campanhas: texto solto para JSON estrito',
-                  ]}
-                />
-              ),
+              lazy: async () => {
+                const { AdminPage } = await import('@/features/admin/AdminPage')
+                return { Component: AdminPage }
+              },
             },
           ],
         },

@@ -148,4 +148,36 @@ export const api = {
       campaign_id: campaignId,
       ...(regenerarSeq !== undefined ? { regenerate_turn_seq: regenerarSeq } : {}),
     }),
+
+  // --- area do mestre
+  ingerirLivro: (rulebookId: string, publicar: boolean) =>
+    invocar<RespostaDeIngestao>('ingest-rulebook', {
+      rulebook_id: rulebookId,
+      publish: publicar,
+    }),
+
+  extrairAventura: (adventureId: string, textoFonte?: string) =>
+    invocar<RespostaDeExtracao>('extract-adventure', {
+      adventure_id: adventureId,
+      ...(textoFonte ? { source_text: textoFonte } : {}),
+    }),
+}
+
+export interface RespostaDeIngestao {
+  rulebook_id: string
+  digest: string
+  system_name: string | null
+  dice_notation: string | null
+  published: boolean
+  file_deleted: boolean
+  original_size_bytes: number
+  usage: { promptTokens: number; outputTokens: number; estimated_from_pages: number | null }
+}
+
+export interface RespostaDeExtracao {
+  adventure_id: string
+  plot_digest: string
+  entities_count: number
+  entities_by_kind: Record<string, number>
+  truncated: boolean
 }

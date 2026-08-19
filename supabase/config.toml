@@ -156,6 +156,9 @@ max_indexes = 5
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
 # in emails.
+# ATENCAO: este site_url e de DESENVOLVIMENTO. Nao rode `supabase config push`
+# sem trocar para a URL de producao — e sem conferir a secao de SMTP, que aqui
+# aponta para o inbucket local e desconfiguraria o envio de email do projeto.
 # O app roda no Vite em 5173 (dev) e 4173 (preview).
 site_url = "http://localhost:5173/rpg-ai/"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
