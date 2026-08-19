@@ -58,6 +58,17 @@ pnpm typecheck    # tsc
 pnpm lint         # oxlint
 ```
 
+Validar as migrations e as policies (precisa do Docker rodando):
+
+```bash
+pnpm db:validate     # SQL compila? RLS ligada em toda tabela?
+pnpm db:test-rls     # as policies barram o que deveriam barrar?
+```
+
+Rodar os dois SEMPRE que mexer em migration. `db:test-rls` ja pegou uma falha
+real: `grant update` na tabela seguido de `revoke update (coluna)` nao protege
+a coluna no Postgres.
+
 Validar contraste apos mexer em qualquer token de cor:
 
 ```bash
