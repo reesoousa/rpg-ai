@@ -153,10 +153,29 @@ async function main() {
   verifica('publica o digest em systems.rules_digest', Boolean(sisAtualizado?.rules_digest))
 
   const [livroAtualizado] = await (
-    await svc(`/rest/v1/rulebooks?id=eq.${livro.id}&select=ingested_at,ingest_tokens_input`)
+    await svc(
+      `/rest/v1/rulebooks?id=eq.${livro.id}&select=ingested_at,ingest_tokens_input,storage_path,file_deleted_at,original_size_bytes`,
+    )
   ).json()
   verifica('registra custo real da ingestao', livroAtualizado?.ingest_tokens_input === 3812)
   verifica('marca ingested_at', Boolean(livroAtualizado?.ingested_at))
+
+  // --- o PDF nao deve ficar guardado ocupando Storage
+  verifica('reporta que apagou o arquivo', ingestCorpo.file_deleted === true, `veio ${ingestCorpo.file_deleted}`)
+  verifica('limpa o storage_path', livroAtualizado?.storage_path === null, `veio ${livroAtualizado?.storage_path}`)
+  verifica('marca file_deleted_at', Boolean(livroAtualizado?.file_deleted_at))
+  verifica('guarda o tamanho original antes de apagar', livroAtualizado?.original_size_bytes > 0)
+
+  const pdfSumiu = await fetch(`${URL_BASE}/storage/v1/object/rulebooks/${caminhoPdf}`, {
+    headers: { apikey: SERVICE, authorization: `Bearer ${SERVICE}` },
+  })
+  // O Storage responde 400 para objeto ausente, nao 404.
+  verifica('PDF realmente saiu do bucket', pdfSumiu.status === 400 || pdfSumiu.status === 404, `status ${pdfSumiu.status}`)
+
+  const reingerir = await chamarFn('ingest-rulebook', mestre.token, { rulebook_id: livro.id })
+  const reingerirCorpo = await reingerir.json().catch(() => ({}))
+  verifica('reingerir sem arquivo da erro explicativo', reingerir.status === 409, `status ${reingerir.status}`)
+  verifica('mensagem explica que precisa subir de novo', /apagado/.test(reingerirCorpo.error ?? ''), reingerirCorpo.error)
 
   console.log('\n=== extract-adventure (so mestre) ===')
 
@@ -282,25 +301,57 @@ async function main() {
   const cena = await chamarFn('generate-scene', jogador.token, { campaign_id: campaignId })
   const cenaCorpo = await cena.json().catch(() => ({}))
   verifica('gera a cena', cena.status === 200, `status ${cena.status}: ${JSON.stringify(cenaCorpo).slice(0, 300)}`)
-  verifica('caminho comeca pelo id da campanha', (cenaCorpo.storage_path ?? '').startsWith(`${campaignId}/`), cenaCorpo.storage_path)
-  verifica('devolve URL assinada', (cenaCorpo.signed_url ?? '').includes('token='), cenaCorpo.signed_url?.slice(0, 60))
   verifica('prompt inclui o local do mundo', (cenaCorpo.prompt ?? '').includes('Portao de Vale Cinza'))
   verifica('reporta quota de imagem', typeof cenaCorpo.quota?.images_remaining === 'number')
 
-  const turnoComImagem = await (
-    await svc(`/rest/v1/turns?campaign_id=eq.${campaignId}&select=scene_image_url`)
+  // --- a imagem volta na resposta, nao no Storage
+  verifica('devolve a imagem em base64', (cenaCorpo.image_base64 ?? '').length > 50)
+  verifica('informa o mime type', (cenaCorpo.mime_type ?? '').startsWith('image/'), cenaCorpo.mime_type)
+  verifica('informa o tamanho', cenaCorpo.size_bytes > 0)
+  verifica('nao devolve URL de storage', !('signed_url' in cenaCorpo) && !('storage_path' in cenaCorpo))
+
+  const turnoComCena = await (
+    await svc(`/rest/v1/turns?campaign_id=eq.${campaignId}&select=seq,scene_prompt,scene_generated_at&order=seq`)
   ).json()
-  verifica('imagem vinculada ao turno', Boolean(turnoComImagem[0]?.scene_image_url))
+  const turnoUltimo = turnoComCena[turnoComCena.length - 1]
+  verifica('guarda o prompt no turno', (turnoUltimo?.scene_prompt ?? '').includes('Portao de Vale Cinza'))
+  verifica('marca quando gerou', Boolean(turnoUltimo?.scene_generated_at))
+
+  console.log('\n=== regerar cena a partir do prompt guardado ===')
+  const regerar = await chamarFn('generate-scene', jogador.token, {
+    campaign_id: campaignId,
+    regenerate_turn_seq: turnoUltimo.seq,
+  })
+  const regerarCorpo = await regerar.json().catch(() => ({}))
+  verifica('regera a cena', regerar.status === 200, `status ${regerar.status}: ${JSON.stringify(regerarCorpo).slice(0, 200)}`)
+  verifica('marca como regerada', regerarCorpo.regenerated === true)
+  verifica('reusa o MESMO prompt', regerarCorpo.prompt === turnoUltimo.scene_prompt)
+
+  const semCena = await chamarFn('generate-scene', jogador.token, {
+    campaign_id: campaignId,
+    regenerate_turn_seq: 99,
+  })
+  verifica('recusa regerar turno inexistente', semCena.status === 404, `status ${semCena.status}`)
 
   const uso = await (await svc(`/rest/v1/usage_daily?user_id=eq.${jogador.id}&select=*`)).json()
-  verifica('imagem contabilizada na quota', uso[0]?.images_count === 1, `images=${uso[0]?.images_count}`)
+  // duas geracoes: a cena original e a regerada. Regerar custa quota.
+  verifica('cada geracao conta uma vez na quota', uso[0]?.images_count === 2, `images=${uso[0]?.images_count}`)
 
   await svc(`/rest/v1/profiles?id=eq.${jogador.id}`, {
     method: 'PATCH',
-    body: JSON.stringify({ daily_image_limit: 1 }),
+    body: JSON.stringify({ daily_image_limit: 2 }),
   })
   const cenaEstourada = await chamarFn('generate-scene', jogador.token, { campaign_id: campaignId })
   verifica('429 ao estourar a quota de imagem', cenaEstourada.status === 429, `status ${cenaEstourada.status}`)
+
+  console.log('\n=== nada pesado ficou no Storage ===')
+  const buckets = await fetch(`${URL_BASE}/storage/v1/bucket`, {
+    headers: { apikey: SERVICE, authorization: `Bearer ${SERVICE}` },
+  })
+  const listaBuckets = await buckets.json().catch(() => [])
+  const nomes = Array.isArray(listaBuckets) ? listaBuckets.map((b) => b.id ?? b.name) : []
+  verifica('bucket de cenas nao existe mais', !nomes.includes('scenes'), `buckets: ${nomes.join(', ')}`)
+  verifica('bucket de livros continua (upload temporario)', nomes.includes('rulebooks'), `buckets: ${nomes.join(', ')}`)
 
   console.log('\n===================================')
   console.log(` ${passou} passaram, ${falhou} falharam`)

@@ -1,41 +1,25 @@
 -- Storage e as quotas que faltavam.
 
 -- ---------------------------------------------------------------------------
--- Buckets
+-- Bucket
 --
--- Os dois sao privados. `rulebooks` guarda material licenciado e so o mestre
--- alcanca; `scenes` guarda imagem gerada da campanha de alguem, que e conteudo
--- daquele jogador. A UI le por URL assinada, gerada com o JWT do proprio
--- usuario — nao ha URL publica permanente.
+-- Apenas um, e privado: `rulebooks` guarda material licenciado, e so o mestre
+-- alcanca. O arquivo e TEMPORARIO — a ingestao apaga o PDF depois de extrair o
+-- resumo das regras (ver 20260819140600).
+--
+-- Imagem de cena nao tem bucket de proposito: ela volta na resposta da Edge
+-- Function e vive no IndexedDB do navegador. O plano free da 1 GB de Storage, e
+-- guardar imagem que so um jogador olha nao vale o espaco.
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values
-  ('rulebooks', 'rulebooks', false, 52428800, array['application/pdf']),
-  ('scenes', 'scenes', false, 10485760, array['image/jpeg', 'image/png', 'image/webp'])
+values ('rulebooks', 'rulebooks', false, 52428800, array['application/pdf'])
 on conflict (id) do nothing;
 
--- ---------------------------------------------------------------------------
--- Policies de storage.
---
--- O caminho carrega a autorizacao: em `scenes` o primeiro segmento e o id da
--- campanha, então a posse e verificada por owns_campaign().
--- ---------------------------------------------------------------------------
 create policy "rulebooks: somente mestre"
   on storage.objects for all
   to authenticated
   using (bucket_id = 'rulebooks' and public.is_master())
   with check (bucket_id = 'rulebooks' and public.is_master());
-
-create policy "scenes: dono da campanha le"
-  on storage.objects for select
-  to authenticated
-  using (
-    bucket_id = 'scenes'
-    and public.owns_campaign(((storage.foldername(name))[1])::uuid)
-  );
-
--- Quem escreve em `scenes` e a Edge Function (service_role), depois de gerar a
--- imagem. O cliente nao sobe imagem arbitraria para a campanha.
 
 -- ---------------------------------------------------------------------------
 -- Quota de imagem.

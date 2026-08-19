@@ -1,10 +1,19 @@
 // Botao "Gerar Cena": estado do mundo -> imagem.
 //
+// A imagem NAO e armazenada no Supabase. Ela volta na resposta, em base64, e o
+// app guarda no IndexedDB do navegador. Motivo: o plano free da 1 GB de
+// Storage, e cada imagem come 200-400 KB — encheria em poucas centenas de
+// cenas, para guardar algo que so aquele jogador olha.
+//
+// O que fica no banco e o PROMPT, que e texto e ocupa nada. Com ele, o botao
+// "regerar" reproduz AQUELA cena em vez de sortear uma nova — sem isso, quem
+// perdesse a imagem perderia a cena.
+//
 // O prompt da imagem e montado no codigo, a partir do estado do mundo e do
 // ultimo turno. Nao ha chamada de texto ao modelo antes: seria dobrar o custo
 // para escrever uma frase que o proprio estado ja descreve.
 //
-// Quota propria: imagem e cobrada por unidade, não por token, então o limite de
+// Quota propria: imagem e cobrada por unidade, nao por token, entao o limite de
 // turnos nao a protege.
 
 import { erro, json, preflight } from '../_shared/http.ts'
@@ -19,17 +28,28 @@ import {
 
 const MODELO_PADRAO = 'gemini-3.1-flash-image'
 
-/** URL assinada de 7 dias: a imagem aparece no historico do chat por um tempo. */
-const VALIDADE_URL_SEGUNDOS = 60 * 60 * 24 * 7
-
 interface Corpo {
   campaign_id?: string
   /** Sobrescreve o estilo padrao, se o jogador quiser outro. */
   style?: string
+  /**
+   * Regerar a cena de um turno especifico, usando o prompt ja guardado.
+   * E o caminho de quem perdeu a imagem — trocou de aparelho, limpou o cache.
+   */
+  regenerate_turn_seq?: number
 }
 
 const ESTILO_PADRAO =
   'ilustracao digital, luz dramatica, composicao cinematografica, sem texto, sem interface'
+
+function bytesParaBase64(bytes: Uint8Array): string {
+  let bin = ''
+  const BLOCO = 0x8000
+  for (let i = 0; i < bytes.length; i += BLOCO) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + BLOCO))
+  }
+  return btoa(bin)
+}
 
 Deno.serve(async (req) => {
   const pre = preflight(req)
@@ -50,38 +70,69 @@ Deno.serve(async (req) => {
       .single()
     if (!campanha) throw new RespostaDeErro(404, 'Campanha nao encontrada.')
 
-    const [mundoRes, turnoRes] = await Promise.all([
-      ctx.comoUsuario.from('world_state').select('*').eq('campaign_id', campaignId).single(),
-      ctx.comoUsuario
+    let prompt: string
+    let turnoAlvo: { id: string; seq: number } | null = null
+
+    if (corpo.regenerate_turn_seq !== undefined) {
+      // --- regerar: reutiliza o prompt guardado, para sair a MESMA cena.
+      const seq = Number(corpo.regenerate_turn_seq)
+      if (!Number.isInteger(seq) || seq < 1) {
+        throw new RespostaDeErro(400, 'regenerate_turn_seq deve ser um inteiro positivo.')
+      }
+
+      const { data: turno } = await ctx.comoUsuario
         .from('turns')
-        .select('id, seq, narrative')
+        .select('id, seq, scene_prompt')
         .eq('campaign_id', campaignId)
-        .order('seq', { ascending: false })
-        .limit(1),
-    ])
+        .eq('seq', seq)
+        .single()
 
-    const mundo = mundoRes.data
-    if (!mundo) throw new RespostaDeErro(409, 'Esta campanha ainda nao tem estado de mundo.')
-    const ultimoTurno = turnoRes.data?.[0]
+      if (!turno) throw new RespostaDeErro(404, 'Turno nao encontrado.')
+      if (!turno.scene_prompt) {
+        throw new RespostaDeErro(
+          409,
+          'Este turno nunca teve cena gerada. Use o botao normal de gerar cena.',
+        )
+      }
+      prompt = turno.scene_prompt
+      turnoAlvo = { id: turno.id, seq: turno.seq }
+    } else {
+      // --- cena nova: monta a partir do estado atual.
+      const [mundoRes, turnoRes] = await Promise.all([
+        ctx.comoUsuario.from('world_state').select('*').eq('campaign_id', campaignId).single(),
+        ctx.comoUsuario
+          .from('turns')
+          .select('id, seq, narrative')
+          .eq('campaign_id', campaignId)
+          .order('seq', { ascending: false })
+          .limit(1),
+      ])
 
-    const npcs = Array.isArray(mundo.present_npcs) ? mundo.present_npcs : []
+      const mundo = mundoRes.data
+      if (!mundo) throw new RespostaDeErro(409, 'Esta campanha ainda nao tem estado de mundo.')
 
-    // A narrativa entra truncada: o modelo de imagem nao precisa do texto todo,
-    // e prompt longo aqui nao melhora o resultado.
-    const trecho = ultimoTurno?.narrative
-      ? ultimoTurno.narrative.replace(/[*_#`]/g, '').slice(0, 500)
-      : ''
+      const ultimo = turnoRes.data?.[0]
+      if (ultimo) turnoAlvo = { id: ultimo.id, seq: ultimo.seq }
 
-    const prompt = [
-      mundo.current_location ? `Cena: ${mundo.current_location}.` : '',
-      mundo.location_description ? `${mundo.location_description}` : '',
-      npcs.length ? `Presentes: ${npcs.join(', ')}.` : '',
-      mundo.weather ? `Clima: ${mundo.weather}.` : '',
-      trecho ? `Momento: ${trecho}` : '',
-      estilo,
-    ]
-      .filter(Boolean)
-      .join(' ')
+      const npcs = Array.isArray(mundo.present_npcs) ? mundo.present_npcs : []
+
+      // A narrativa entra truncada: o modelo de imagem nao precisa do texto
+      // todo, e prompt longo aqui nao melhora o resultado.
+      const trecho = ultimo?.narrative
+        ? ultimo.narrative.replace(/[*_#`]/g, '').slice(0, 500)
+        : ''
+
+      prompt = [
+        mundo.current_location ? `Cena: ${mundo.current_location}.` : '',
+        mundo.location_description ?? '',
+        npcs.length ? `Presentes: ${npcs.join(', ')}.` : '',
+        mundo.weather ? `Clima: ${mundo.weather}.` : '',
+        trecho ? `Momento: ${trecho}` : '',
+        estilo,
+      ]
+        .filter(Boolean)
+        .join(' ')
+    }
 
     const { restante, devolver } = await reservarQuota(ctx, 'image')
 
@@ -94,26 +145,13 @@ Deno.serve(async (req) => {
         mimeType: 'image/jpeg',
       })
 
-      // O primeiro segmento do caminho e o id da campanha: e assim que a policy
-      // de storage confere a posse.
-      const caminho = `${campaignId}/${campanha.last_turn_seq}-${crypto.randomUUID()}.jpg`
-
-      const { error: upErro } = await ctx.comoServico.storage
-        .from('scenes')
-        .upload(caminho, imagem.bytes, { contentType: imagem.mimeType, upsert: false })
-
-      if (upErro) throw new Error(`Falha ao salvar a imagem: ${upErro.message}`)
-
-      if (ultimoTurno) {
+      // Guarda apenas o prompt e a marca de tempo. A imagem vai para o cliente.
+      if (turnoAlvo) {
         await ctx.comoServico
           .from('turns')
-          .update({ scene_image_url: caminho })
-          .eq('id', ultimoTurno.id)
+          .update({ scene_prompt: prompt, scene_generated_at: new Date().toISOString() })
+          .eq('id', turnoAlvo.id)
       }
-
-      const { data: assinada } = await ctx.comoServico.storage
-        .from('scenes')
-        .createSignedUrl(caminho, VALIDADE_URL_SEGUNDOS)
 
       // p_images fica em 0 de proposito: consume_image_quota ja incrementou o
       // contador ao reservar. Passar 1 aqui contaria a mesma imagem duas vezes
@@ -126,10 +164,14 @@ Deno.serve(async (req) => {
       })
 
       return json(req, {
-        storage_path: caminho,
-        signed_url: assinada?.signedUrl ?? null,
+        turn_seq: turnoAlvo?.seq ?? null,
         prompt,
-        turn_seq: ultimoTurno?.seq ?? null,
+        mime_type: imagem.mimeType,
+        // O app guarda isto no IndexedDB. Nao volta em nenhuma leitura futura:
+        // se o dispositivo perder, o caminho e regenerate_turn_seq.
+        image_base64: bytesParaBase64(imagem.bytes),
+        size_bytes: imagem.bytes.length,
+        regenerated: corpo.regenerate_turn_seq !== undefined,
         quota: { images_remaining: restante },
       })
     } catch (e) {
