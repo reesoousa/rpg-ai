@@ -9,7 +9,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "db:validate": "bash scripts/validate-migrations.sh",
+    "db:test-rls": "bash scripts/test-rls.sh",
+    "db:push": "supabase db push"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.3.0",
