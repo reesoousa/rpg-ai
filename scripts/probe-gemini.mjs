@@ -54,20 +54,41 @@ function titulo(texto) {
   console.log(`--- ${texto} ${'-'.repeat(Math.max(0, 66 - texto.length))}`)
 }
 
-async function chamar(url, corpo) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': CHAVE },
-    body: JSON.stringify(corpo),
-  })
-  const texto = await res.text()
-  let payload = null
-  try {
-    payload = JSON.parse(texto)
-  } catch {
-    payload = texto
+/**
+ * Statuses que o cliente repete — a sonda tem de repetir tambem.
+ *
+ * Sem isto ela devolve falso-negativo: foi assim que a primeira rodada deixou
+ * `thinkingConfig.thinkingLevel` e `sem thinking` marcados como 503, sem
+ * responder se a variante presta.
+ */
+const REPETIVEIS = new Set([429, 500, 502, 503, 504])
+
+async function chamar(url, corpo, tentativas = 3) {
+  let ultimo = null
+
+  for (let i = 0; i < tentativas; i++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': CHAVE },
+      body: JSON.stringify(corpo),
+    })
+    const texto = await res.text()
+    let payload = null
+    try {
+      payload = JSON.parse(texto)
+    } catch {
+      payload = texto
+    }
+
+    ultimo = { status: res.status, ok: res.ok, payload, texto, tentativas: i + 1 }
+    if (!REPETIVEIS.has(res.status)) return ultimo
+
+    if (i < tentativas - 1) {
+      await new Promise((r) => setTimeout(r, 700 * 2 ** i + Math.random() * 300))
+    }
   }
-  return { status: res.status, ok: res.ok, payload, texto }
+
+  return ultimo
 }
 
 // ---------------------------------------------------------------------------
@@ -107,10 +128,14 @@ async function listarModelos() {
 // ---------------------------------------------------------------------------
 // 2. Qual variante de thinking o generateContent aceita
 //
-// O cliente (supabase/functions/_shared/gemini.ts) tenta nesta ordem:
-// thinkingLevel no generationConfig, thinkingConfig.thinkingLevel, e nada.
-// A sonda testa as tres isoladamente para saber qual e a certa em vez de
-// depender do fallback silencioso.
+// JA MEDIDO em gemini-3.7-flash:
+//   generationConfig.thinkingLevel         -> 400 Unknown name "thinkingLevel"
+//   thinkingConfig.thinkingBudget          -> 200 STOP
+//   thinkingConfig.thinkingLevel           -> 503 (inconclusivo na 1a rodada)
+//
+// O cliente agora tenta na ordem budget -> level -> nada. A sonda repete a
+// ordem para confirmar, e com retry: sem retry, um 503 passageiro faz uma
+// variante boa parecer rejeitada.
 // ---------------------------------------------------------------------------
 const ESQUEMA = {
   type: 'object',
@@ -142,16 +167,17 @@ function corpoBase(maxOutputTokens) {
   }
 }
 
+// Ordem igual a do cliente: a comprovada primeiro.
 const VARIANTES = [
-  ['thinkingLevel', (g, v) => ({ ...g, thinkingLevel: v })],
-  [
-    'thinkingConfig.thinkingLevel',
-    (g, v) => ({ ...g, thinkingConfig: { thinkingLevel: v } }),
-  ],
   [
     'thinkingConfig.thinkingBudget',
     (g) => ({ ...g, thinkingConfig: { thinkingBudget: 512 } }),
   ],
+  [
+    'thinkingConfig.thinkingLevel',
+    (g, v) => ({ ...g, thinkingConfig: { thinkingLevel: v } }),
+  ],
+  ['generationConfig.thinkingLevel', (g, v) => ({ ...g, thinkingLevel: v })],
   ['sem thinking', (g) => g],
 ]
 
@@ -166,7 +192,10 @@ async function testarThinking(modelo) {
 
     if (!r.ok) {
       const msg = r.payload?.error?.message ?? r.texto
-      log(`${nome.padEnd(30)} ${r.status}  ${limpar(msg).slice(0, 220)}`)
+      log(
+        `${nome.padEnd(30)} ${r.status}  ${limpar(msg).slice(0, 190)}` +
+          (r.tentativas > 1 ? ` (desistiu apos ${r.tentativas})` : ''),
+      )
       continue
     }
 
@@ -177,7 +206,8 @@ async function testarThinking(modelo) {
     log(
       `${nome.padEnd(30)} 200  finish=${c?.finishReason}  ` +
         `prompt=${u.promptTokenCount ?? 0} out=${u.candidatesTokenCount ?? 0} ` +
-        `thoughts=${u.thoughtsTokenCount ?? 0}  texto=${texto.length}ch`,
+        `thoughts=${u.thoughtsTokenCount ?? 0}  texto=${texto.length}ch` +
+        (r.tentativas > 1 ? `  (${r.tentativas} tentativas)` : ''),
     )
     if (!texto.trim()) {
       log('     ^ ATENCAO: 200 com texto vazio. E aqui que o app diz "conteudo vazio".')
@@ -277,6 +307,66 @@ async function testarImagem(modelo) {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 5. Disponibilidade: qual modelo de fato responde
+//
+// Esta secao existe por causa do achado que explicou tudo. A primeira rodada
+// pegou 503 "This model is currently experiencing high demand" em metade das
+// chamadas a gemini-3.7-flash, enquanto o wizard — a unica coisa que funcionava
+// no app — usava gemini-3.1-flash-lite. Nao era codigo: era o modelo mais
+// disputado da familia recusando atender.
+//
+// O cliente agora repete no 503. Mas escolher o modelo do turno com base em
+// medicao vale mais do que apostar no numero de versao mais alto: a diferenca
+// aqui e sentida como turno que abre ou turno que trava.
+// ---------------------------------------------------------------------------
+const AMOSTRAS = Number(process.env.PROBE_AMOSTRAS ?? 4)
+
+async function medirDisponibilidade(nomes) {
+  titulo(`5. disponibilidade (${AMOSTRAS} chamadas por modelo, sem retry)`)
+
+  const candidatos = [
+    MODELOS.turno,
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-flash-latest',
+    MODELOS.wizard,
+  ].filter((m, i, a) => a.indexOf(m) === i && (!nomes || nomes.includes(m)))
+
+  for (const modelo of candidatos) {
+    let ok = 0
+    let sobrecarga = 0
+    let outro = ''
+    let somaMs = 0
+
+    for (let i = 0; i < AMOSTRAS; i++) {
+      const corpo = corpoBase(512)
+      corpo.generationConfig = {
+        ...corpo.generationConfig,
+        thinkingConfig: { thinkingBudget: 0 },
+      }
+      const t0 = Date.now()
+      // tentativas = 1: aqui a intencao e MEDIR a taxa de recusa, nao contorna-la.
+      const r = await chamar(`${BASE}/models/${modelo}:generateContent`, corpo, 1)
+      somaMs += Date.now() - t0
+
+      if (r.ok) ok++
+      else if (REPETIVEIS.has(r.status)) sobrecarga++
+      else outro = `${r.status} ${limpar(r.payload?.error?.message ?? '').slice(0, 90)}`
+    }
+
+    const media = Math.round(somaMs / AMOSTRAS)
+    log(
+      `${modelo.padEnd(26)} ok=${ok}/${AMOSTRAS}  sobrecarga=${sobrecarga}  ` +
+        `media=${media}ms${outro ? `  outro: ${outro}` : ''}`,
+    )
+  }
+
+  log('')
+  log('Modelo com sobrecarga alta e candidato a sair do padrao do turno.')
+  log('Trocar sem mexer no codigo: secret GEMINI_MODEL_TURN na Edge Function.')
+}
+
 async function main() {
   log('Sonda do Gemini. A chave e lida do ambiente e nunca aparece na saida.')
 
@@ -305,6 +395,8 @@ async function main() {
     titulo('4. geracao de imagem')
     log('pulado. Rode com --image para testar (custa mais que os testes de texto).')
   }
+
+  await medirDisponibilidade(nomes)
 
   console.log('')
   log('Fim. Cole a saida inteira: nenhuma linha dela contem a chave.')

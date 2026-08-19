@@ -15,6 +15,8 @@
     "db:push": "supabase db push",
     "fn:serve": "supabase functions serve --env-file supabase/functions/.env.local",
     "stub:gemini": "node scripts/gemini-stub.mjs",
+    "test:gemini": "node --experimental-transform-types scripts/test-gemini-client.mjs",
+    "probe:gemini": "node scripts/probe-gemini.mjs",
     "test:e2e": "node scripts/test-play-turn.mjs",
     "test:base": "node scripts/test-base.mjs"
   },

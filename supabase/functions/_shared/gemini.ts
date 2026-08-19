@@ -178,7 +178,48 @@ export interface GenerateOptions {
   signal?: AbortSignal
 }
 
-type ThinkingVariant = 'thinkingLevel' | 'thinkingConfig' | 'none'
+// ---------------------------------------------------------------------------
+// Thinking — o que a API REAL aceita
+//
+// Medido com scripts/probe-gemini.mjs contra gemini-3.7-flash, nao deduzido da
+// documentacao:
+//
+//   generationConfig.thinkingLevel            -> 400 Unknown name "thinkingLevel"
+//                                                at 'generation_config'
+//   generationConfig.thinkingConfig.budget    -> 200 STOP, resposta completa
+//   generationConfig.thinkingConfig.level     -> inconclusivo (caiu em 503)
+//
+// Ou seja: `thinkingLevel` no topo do generationConfig, que era a primeira
+// tentativa do cliente, NAO existe. Toda chamada com thinking comecava
+// queimando uma requisicao num 400 garantido — e num modelo disputado isso
+// multiplicava a chance de esbarrar num 503 nas tentativas seguintes.
+//
+// A ordem agora comeca pela forma comprovada. `thinkingConfig.thinkingLevel`
+// fica como segunda tentativa porque o 503 nao permitiu descartar, e porque a
+// Interactions API usa esse nome — se a API convergir para ele, o cliente
+// acompanha sem mudanca.
+// ---------------------------------------------------------------------------
+type ThinkingVariant = 'budget' | 'level' | 'none'
+
+/**
+ * Nome do nivel -> orcamento de tokens de raciocinio.
+ *
+ * O projeto raciocina em niveis (`low` para narrar, `medium` para ler um livro)
+ * porque e assim que a decisao de custo esta escrita no CLAUDE.md. A API cobra
+ * thinking como output, então o nivel vira teto de tokens: e o mesmo controle,
+ * expresso na unidade que o `generateContent` entende.
+ */
+const ORCAMENTO_POR_NIVEL: Record<string, number> = {
+  none: 0,
+  minimal: 128,
+  low: 512,
+  medium: 2048,
+  high: 8192,
+}
+
+function orcamentoDeThinking(nivel: string): number {
+  return ORCAMENTO_POR_NIVEL[nivel.toLowerCase()] ?? ORCAMENTO_POR_NIVEL.low!
+}
 
 /**
  * Teto de saida padrao.
@@ -204,13 +245,12 @@ function buildBody(
     generationConfig.responseSchema = opts.responseSchema
   }
 
-  // A documentacao do generateContent nao confirma o nome do campo de thinking
-  // (a pagina de thinking descreve a Interactions API). Tentamos a variante
-  // mais provavel e recuamos no 400 — ver generateStructured() abaixo.
   if (opts.thinkingLevel) {
-    if (variant === 'thinkingLevel') {
-      generationConfig.thinkingLevel = opts.thinkingLevel
-    } else if (variant === 'thinkingConfig') {
+    if (variant === 'budget') {
+      generationConfig.thinkingConfig = {
+        thinkingBudget: orcamentoDeThinking(opts.thinkingLevel),
+      }
+    } else if (variant === 'level') {
       generationConfig.thinkingConfig = { thinkingLevel: opts.thinkingLevel }
     }
   }
@@ -258,7 +298,87 @@ function endpoint(model: string): string {
   return `${base}/models/${model}:generateContent`
 }
 
-const THINKING_FALLBACK: ThinkingVariant[] = ['thinkingLevel', 'thinkingConfig', 'none']
+const THINKING_FALLBACK: ThinkingVariant[] = ['budget', 'level', 'none']
+
+// ---------------------------------------------------------------------------
+// Retry
+//
+// Esta era a falha que derrubava o jogo. A sonda mediu 503 "This model is
+// currently experiencing high demand" em metade das chamadas a
+// gemini-3.7-flash. O cliente tratava qualquer status nao-400 como definitivo e
+// lancava na hora — um pico de demanda de segundos virava turno perdido, e o
+// jogador via "Falha ao consultar o mestre" sem nenhuma pista.
+//
+// O proprio provedor diz que o pico e temporario. Entao vale esperar: tres
+// tentativas com espera crescente resolvem o caso comum sem transformar
+// indisponibilidade real em requisicao pendurada.
+// ---------------------------------------------------------------------------
+const STATUS_QUE_VALE_REPETIR = new Set([429, 500, 502, 503, 504])
+const TENTATIVAS = 3
+const ESPERA_BASE_MS = 700
+
+/** Espera crescente com jitter, para N chamadas simultaneas nao voltarem juntas. */
+function esperar(tentativa: number): Promise<void> {
+  const base = ESPERA_BASE_MS * 2 ** tentativa
+  return new Promise((r) => setTimeout(r, base + Math.random() * 300))
+}
+
+/**
+ * O modelo esta sobrecarregado, nao ha nada errado com a requisicao.
+ *
+ * Existe separado de GeminiError porque a acao do usuario e diferente: nao ha o
+ * que reformular, e so tentar de novo. Dizer "falha ao gerar" para um 503 manda
+ * o jogador procurar problema onde nao tem.
+ */
+export class GeminiSobrecargaError extends Error {
+  constructor(
+    readonly status: number,
+    readonly tentativas: number,
+  ) {
+    super(
+      `O modelo esta sobrecarregado (HTTP ${status}) e nao respondeu em ` +
+        `${tentativas} tentativas. Isso costuma passar em alguns segundos.`,
+    )
+    this.name = 'GeminiSobrecargaError'
+  }
+}
+
+/**
+ * POST no endpoint, repetindo o que vale repetir.
+ *
+ * Devolve a resposta, inclusive quando ela e 400 — 400 e problema do payload e
+ * repetir nao muda nada. Somente 429 e 5xx entram no laco.
+ */
+async function postarComRetry(
+  url: string,
+  corpo: unknown,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let ultimoStatus = 0
+
+  for (let tentativa = 0; tentativa < TENTATIVAS; tentativa++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey() },
+      body: JSON.stringify(corpo),
+      signal: signal ?? null,
+    })
+
+    if (!STATUS_QUE_VALE_REPETIR.has(res.status)) return res
+
+    ultimoStatus = res.status
+    // O corpo precisa ser consumido antes da proxima tentativa.
+    const detalhe = await res.text()
+    console.warn(
+      `gemini/retry tentativa ${tentativa + 1}/${TENTATIVAS} status ${res.status}`,
+      detalhe.slice(0, 200),
+    )
+
+    if (tentativa < TENTATIVAS - 1) await esperar(tentativa)
+  }
+
+  throw new GeminiSobrecargaError(ultimoStatus, TENTATIVAS)
+}
 
 /**
  * Gera conteudo estruturado. Com responseSchema, o retorno ja vem parseado.
@@ -272,15 +392,11 @@ export async function generateStructured<T>(
   let semSaida: GeminiSemSaidaError | undefined
 
   for (const variant of variants) {
-    const res = await fetch(endpoint(opts.model), {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-goog-api-key': apiKey(),
-      },
-      body: JSON.stringify(buildBody(opts, variant)),
-      signal: opts.signal ?? null,
-    })
+    const res = await postarComRetry(
+      endpoint(opts.model),
+      buildBody(opts, variant),
+      opts.signal,
+    )
 
     if (res.status === 400) {
       const text = await res.text()
@@ -414,13 +530,11 @@ export async function generateImage(opts: ImageOptions): Promise<ImageResult> {
   const base = Deno.env.get('GEMINI_API_BASE') ?? API_BASE
   const mimeType = opts.mimeType ?? 'image/jpeg'
 
-  const res = await fetch(`${base}/interactions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-goog-api-key': apiKey(),
-    },
-    body: JSON.stringify({
+  // Mesmo retry do texto: imagem sai de modelo disputado tambem, e um 503 aqui
+  // consumia quota de imagem do jogador por um pico de segundos.
+  const res = await postarComRetry(
+    `${base}/interactions`,
+    {
       model: opts.model,
       input: [{ type: 'text', text: opts.prompt }],
       response_format: {
@@ -429,9 +543,9 @@ export async function generateImage(opts: ImageOptions): Promise<ImageResult> {
         aspect_ratio: opts.aspectRatio ?? '16:9',
         image_size: opts.imageSize ?? '1K',
       },
-    }),
-    signal: opts.signal ?? null,
-  })
+    },
+    opts.signal,
+  )
 
   if (!res.ok) {
     throw new GeminiError(
