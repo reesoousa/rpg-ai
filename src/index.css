@@ -1,0 +1,255 @@
+@import 'tailwindcss';
+
+/* Fontes self-hosted. CDN quebraria o PWA offline.
+   @font-face na mao em vez do @import do pacote: o import traz cirilico, grego
+   e vietnamita junto (~150 kB inuteis). O subset latin cobre todos os acentos
+   do portugues, que vivem no Latin-1 Supplement. */
+@font-face {
+  font-family: 'Archivo Variable';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('@fontsource-variable/archivo/files/archivo-latin-wght-normal.woff2')
+    format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-normal.woff2')
+    format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* A narrativa usa italico de verdade (enfase, pensamento). Sem o arquivo real
+   o browser sintetiza um oblíquo torto. */
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: italic;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url('@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-italic.woff2')
+    format('woff2-variations');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Mono nao tem versao variavel: pesos estaticos, subset latin. */
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+
+/* Permite `dark:` pontual. Na maior parte do app os tokens semanticos
+   ja resolvem o tema, sem precisar da variante. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ---------------------------------------------------------------------------
+   Tokens. Valores em docs/design/DESIGN.md, todos com contraste medido.
+   `inline` faz o Tailwind emitir var() direto, para o tema poder trocar.
+--------------------------------------------------------------------------- */
+@theme inline {
+  --font-display: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --color-bg: var(--bg);
+  --color-bg-glow: var(--bg-glow);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-on-primary: var(--on-primary);
+  --color-accent-text: var(--accent-text);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-arcane: var(--arcane);
+
+  --radius-control: 12px;
+  --radius-card: 20px;
+  --radius-sheet: 28px;
+
+  --shadow-1: var(--elev-1);
+  --shadow-2: var(--elev-2);
+
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --text-display-lg: 2.5rem;
+  --text-display-lg--line-height: 1.05;
+  --text-display-lg--letter-spacing: -0.03em;
+  --text-display: 2rem;
+  --text-display--line-height: 1.1;
+  --text-display--letter-spacing: -0.03em;
+  --text-title: 1.375rem;
+  --text-title--line-height: 1.25;
+  --text-title--letter-spacing: -0.02em;
+  --text-ui: 0.9375rem;
+  --text-ui--line-height: 1.4;
+  --text-ui-sm: 0.8125rem;
+  --text-ui-sm--line-height: 1.4;
+  --text-narrative: 1.0625rem;
+  --text-narrative--line-height: 1.75;
+  --text-data: 0.9375rem;
+  --text-data--line-height: 1.2;
+}
+
+/* --- Dark e o padrao do produto --- */
+:root {
+  color-scheme: dark;
+
+  --bg: #0b0613;
+  --bg-glow: #211834;
+  --surface-1: #231f2b;
+  --surface-2: #322e39;
+  --surface-sunken: #060310;
+  --text: #f4f2f8;
+  --text-muted: #aeadc3;
+  --primary: #8342eb;
+  --primary-hover: #9459f0;
+  --on-primary: #ffffff;
+  --accent-text: #b688ff;
+  --danger: #ff4a57;
+  --success: #31ee64;
+  --warning: #ff6333;
+  --arcane: #ea78e2;
+
+  /* Em dark a separacao vem da luminancia da superficie, nao da sombra. */
+  --elev-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px rgb(0 0 0 / 0.35);
+  --elev-2: 0 2px 4px rgb(0 0 0 / 0.35), 0 16px 40px rgb(0 0 0 / 0.45);
+
+  --gradient-accent: linear-gradient(135deg, #5b1ebc 0%, #b688ff 55%, #ff6333 100%);
+}
+
+/* Light: aplicado quando o sistema pede, salvo escolha explicita por dark. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+
+    --bg: #faf8fc;
+    --bg-glow: #f1ebfb;
+    --surface-1: #ffffff;
+    --surface-2: #ffffff;
+    --surface-sunken: #efebf5;
+    --text: #14101f;
+    --text-muted: #5b5670;
+    --primary: #6e28d9;
+    --primary-hover: #5b1ebc;
+    --on-primary: #ffffff;
+    --accent-text: #6e28d9;
+    /* Semanticos tem par por tema: os hex do dark reprovam AA aqui. */
+    --danger: #cf3c46;
+    --success: #1b8337;
+    --warning: #c44c27;
+    --arcane: #a4549e;
+
+    /* Em light card branco sobre bg da 1.06 de contraste — invisivel.
+       Sem contorno (regra 1), a separacao TEM de vir da sombra. */
+    --elev-1: 0 1px 2px rgb(20 16 31 / 0.05), 0 6px 20px rgb(20 16 31 / 0.07);
+    --elev-2: 0 2px 4px rgb(20 16 31 / 0.07), 0 16px 40px rgb(20 16 31 / 0.12);
+  }
+}
+
+/* Toggle explicito vence a preferencia do sistema, nas duas direcoes. */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #faf8fc;
+  --bg-glow: #f1ebfb;
+  --surface-1: #ffffff;
+  --surface-2: #ffffff;
+  --surface-sunken: #efebf5;
+  --text: #14101f;
+  --text-muted: #5b5670;
+  --primary: #6e28d9;
+  --primary-hover: #5b1ebc;
+  --on-primary: #ffffff;
+  --accent-text: #6e28d9;
+  --danger: #cf3c46;
+  --success: #1b8337;
+  --warning: #c44c27;
+  --arcane: #a4549e;
+
+  --elev-1: 0 1px 2px rgb(20 16 31 / 0.05), 0 6px 20px rgb(20 16 31 / 0.07);
+  --elev-2: 0 2px 4px rgb(20 16 31 / 0.07), 0 16px 40px rgb(20 16 31 / 0.12);
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--bg);
+    background-image: radial-gradient(
+      130% 80% at 50% 0%,
+      var(--bg-glow) 0%,
+      var(--bg) 60%
+    );
+    background-attachment: fixed;
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 700;
+  }
+
+  /* Regra 1: nenhum contorno hairline. `:focus-visible` e a unica excecao,
+     porque WCAG 2.4.11 exige foco visivel e teclado sem foco e inacessivel.
+     Nao aparece para mouse/touch. */
+  :focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 40%, transparent);
+    color: var(--text);
+  }
+
+  /* O jogo e feito de texto que o jogador precisa poder copiar. */
+  button,
+  [role='button'] {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@utility gradient-accent {
+  background-image: var(--gradient-accent);
+}
+
+/* Coluna de leitura da narrativa. */
+@utility narrative {
+  max-width: 68ch;
+  font-family: var(--font-sans);
+  font-size: var(--text-narrative);
+  line-height: 1.75;
+  user-select: text;
+}
