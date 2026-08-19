@@ -1,14 +1,9 @@
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import { Link, type LinkProps } from 'react-router'
 import { cn } from '@/lib/utils'
 
 type Variant = 'primary' | 'gradient' | 'subtle' | 'ghost'
 type Size = 'md' | 'lg'
-
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: Variant
-  size?: Size
-  children?: ReactNode
-}
 
 /**
  * Escrito a mao em vez de vir do shadcn/ui: os componentes gerados nascem com
@@ -29,23 +24,41 @@ const sizes: Record<Size, string> = {
   lg: 'h-14 px-6 text-ui',
 }
 
+const base = cn(
+  'font-display inline-flex items-center justify-center gap-2 rounded-full font-medium',
+  'transition-colors duration-150 ease-out',
+  'disabled:pointer-events-none disabled:opacity-50',
+)
+
+export function estilosDeBotao(variant: Variant = 'primary', size: Size = 'md'): string {
+  return cn(base, variants[variant], sizes[size])
+}
+
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: Variant
+  size?: Size
+  children?: ReactNode
+}
+
 export function Button({
   variant = 'primary',
   size = 'md',
   className,
   ...props
 }: ButtonProps) {
-  return (
-    <button
-      className={cn(
-        'font-display inline-flex items-center justify-center gap-2 rounded-full font-medium',
-        'transition-colors duration-150 ease-out',
-        'disabled:pointer-events-none disabled:opacity-50',
-        variants[variant],
-        sizes[size],
-        className,
-      )}
-      {...props}
-    />
-  )
+  return <button className={cn(estilosDeBotao(variant, size), className)} {...props} />
+}
+
+/**
+ * Mesmo visual, mas navega. Existe porque `<Link>` dentro de `<button>` e HTML
+ * invalido — e porque um alvo de navegacao deve ser uma ancora, para abrir em
+ * nova aba e aparecer no menu de contexto como o usuario espera.
+ */
+export function ButtonLink({
+  variant = 'primary',
+  size = 'md',
+  className,
+  ...props
+}: LinkProps & { variant?: Variant; size?: Size }) {
+  return <Link className={cn(estilosDeBotao(variant, size), className)} {...props} />
 }

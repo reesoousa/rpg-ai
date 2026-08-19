@@ -5,37 +5,44 @@ import remarkGfm from 'remark-gfm'
 import rehypeSanitize from 'rehype-sanitize'
 import { cn } from '@/lib/utils'
 
+/** Formato como o turno vem do banco. */
 export interface Turn {
-  id: string
-  /** Markdown cru vindo do mestre. E ele que o botao copiar entrega. */
+  id?: string
+  seq: number
+  turn_type: 'speak' | 'act' | 'continue' | 'opening'
+  player_input: string | null
+  /** Markdown cru do mestre. E isto que o botao copiar entrega. */
   narrative: string
-  /** A acao do jogador que provocou este turno, quando houve uma. */
-  playerAction?: { type: 'speak' | 'act' | 'continue'; text?: string }
+  scene_prompt?: string | null
 }
 
-const actionLabel = {
+const rotuloDaAcao = {
   speak: 'Voce diz',
   act: 'Voce faz',
   continue: 'A cena segue',
+  opening: 'A historia comeca',
 } as const
 
 export function TurnBlock({ turn }: { turn: Turn }) {
-  const [copied, setCopied] = useState(false)
+  const [copiado, setCopiado] = useState(false)
 
-  async function copy() {
-    await navigator.clipboard.writeText(turn.narrative)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1600)
+  async function copiar() {
+    try {
+      await navigator.clipboard.writeText(turn.narrative)
+      setCopiado(true)
+      setTimeout(() => setCopiado(false), 1600)
+    } catch {
+      // Sem permissao de clipboard: a selecao manual continua funcionando,
+      // que e o motivo de nunca desligarmos user-select.
+    }
   }
 
   return (
     <article className="group relative">
-      {turn.playerAction && (
-        <p className="text-text-muted font-display text-ui-sm mb-3 font-medium">
-          <span className="text-accent-text">{actionLabel[turn.playerAction.type]}</span>
-          {turn.playerAction.text ? ` — ${turn.playerAction.text}` : ''}
-        </p>
-      )}
+      <p className="text-text-muted font-display text-ui-sm mb-3 font-medium">
+        <span className="text-accent-text">{rotuloDaAcao[turn.turn_type]}</span>
+        {turn.player_input ? ` — ${turn.player_input}` : ''}
+      </p>
 
       {/* Prosa corrida, sem bolha. Selecao de texto livre por requisito. */}
       <div
@@ -52,7 +59,7 @@ export function TurnBlock({ turn }: { turn: Turn }) {
 
       <button
         type="button"
-        onClick={copy}
+        onClick={copiar}
         aria-label="Copiar este trecho"
         className={cn(
           'text-text-muted hover:text-text mt-3 inline-flex h-9 items-center gap-1.5',
@@ -61,8 +68,8 @@ export function TurnBlock({ turn }: { turn: Turn }) {
           'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100',
         )}
       >
-        {copied ? <Check size={15} /> : <Copy size={15} />}
-        {copied ? 'Copiado' : 'Copiar'}
+        {copiado ? <Check size={15} /> : <Copy size={15} />}
+        {copiado ? 'Copiado' : 'Copiar'}
       </button>
     </article>
   )
