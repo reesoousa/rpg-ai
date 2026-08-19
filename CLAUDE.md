@@ -75,6 +75,63 @@ Validar contraste apos mexer em qualquer token de cor:
 node docs/design/contrast-check.mjs
 ```
 
+Testar as Edge Functions ponta a ponta, sem gastar token de IA. Em tres
+terminais:
+
+```bash
+pnpm supabase start
+```
+
+```bash
+pnpm stub:gemini
+```
+
+```bash
+pnpm fn:serve
+```
+
+Depois, com as credenciais locais no ambiente:
+
+```bash
+pnpm test:e2e     # play-turn
+```
+
+```bash
+pnpm test:base    # start-campaign, wizard, ingest, extract, scene
+```
+
+O stub responde no formato do Gemini **e valida o payload** que a function
+enviou: safety settings, `responseSchema` e a ordem das partes do prompt.
+
+## IA — decisoes de custo
+
+Medido na tabela de precos, nao estimado:
+
+| Uso | Modelo | Por que |
+|-----|--------|---------|
+| Turno de jogo | `gemini-3.7-flash`, thinking `low` | E a experiencia do produto. Thinking baixo porque narrar nao exige raciocinio profundo, e thinking e cobrado como output |
+| Wizard e extracao | `gemini-3.1-flash-lite` | Tarefa de preenchimento e extracao, sem exigencia narrativa |
+
+**Context caching explicito nao e o padrao, ao contrario do plano inicial.** Ele
+cobra armazenamento por hora: um livro de ~200k tokens custa ~US$ 0,20/hora,
+~US$ 144/mes se ficar ligado. Para uso pessoal e proibitivo.
+
+No lugar dele:
+
+1. `systems.rules_digest` e `adventures.plot_digest` — resumo operacional
+   extraido uma vez, na casa dos poucos milhares de tokens.
+2. Prompt ordenado do estavel ao volatil, para o cache **implicito** (automatico
+   em Gemini 2.5+, sem custo de armazenamento) pegar o prefixo.
+3. Janela de historico fixa em 6 turnos.
+
+Cache explicito continua util para uma sessao especifica com TTL curto, mas
+como excecao deliberada.
+
+**Safety settings** ficam em `OFF` nas cinco categorias configuraveis. Duas
+ressalvas: o provedor mantem barreiras que nao se desligam por parametro (o
+codigo trata `finishReason` de bloqueio com mensagem clara), e a documentacao
+avisa que configuracao menos restritiva pode passar por revisao.
+
 ## Git
 
 - `main` e protegida: trabalho vai em `feat/*` com PR.

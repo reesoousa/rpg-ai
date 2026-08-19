@@ -27,3 +27,6 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# saida do stub de teste do gemini
+stub-last-request.json
