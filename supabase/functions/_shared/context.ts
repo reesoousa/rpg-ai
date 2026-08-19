@@ -33,6 +33,31 @@ export interface TurnoAnterior {
   narrative: string
 }
 
+export interface Aventura {
+  title: string
+  synopsis: string | null
+  /** Resumo operacional gerado por extract-adventure. */
+  plot_digest?: string | null
+}
+
+export type TipoDeEntidade = 'location' | 'npc' | 'item' | 'faction' | 'event'
+
+export interface Entidade {
+  kind: TipoDeEntidade
+  name: string
+  summary: string | null
+  data: Record<string, unknown>
+}
+
+/**
+ * Teto de entidades no prompt.
+ *
+ * A extracao guarda ate 200 por aventura; mandar todas infla o prefixo do
+ * prompt sem melhorar a narrativa. 60 cobre uma aventura densa e mantem o
+ * custo do turno previsivel.
+ */
+export const MAX_ENTIDADES_NO_PROMPT = 60
+
 /** Quantos turnos anteriores acompanham o prompt. */
 export const JANELA_DE_HISTORICO = 6
 
@@ -69,7 +94,9 @@ TIPOS DE TURNO
 function fmt(valor: unknown): string {
   if (valor === null || valor === undefined || valor === '') return '—'
   if (Array.isArray(valor)) {
-    return valor.length ? valor.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(', ') : '—'
+    return valor.length
+      ? valor.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(', ')
+      : '—'
   }
   if (typeof valor === 'object') {
     const entradas = Object.entries(valor as Record<string, unknown>)
@@ -107,6 +134,81 @@ Relogio do mundo: dia ${dia}, ${hora}
 Consequencias em aberto: ${fmt(w.flags)}`
 }
 
+/** Rotulos em portugues: o modelo le o prompt em portugues, nao em ingles. */
+const ROTULO_DE_ENTIDADE: Record<TipoDeEntidade, string> = {
+  location: 'Lugares',
+  npc: 'Pessoas',
+  item: 'Itens',
+  faction: 'Faccoes',
+  event: 'Eventos em curso',
+}
+
+const ORDEM_DE_ENTIDADE: TipoDeEntidade[] = [
+  'location',
+  'npc',
+  'faction',
+  'item',
+  'event',
+]
+
+/**
+ * Compila a aventura para o prompt.
+ *
+ * Esta era a lacuna mais cara do projeto: a fabrica de campanhas extraia
+ * locais, NPCs, itens, faccoes e eventos para `adventure_entities`, e o
+ * `plot_digest` resumia a trama — e nada disso chegava ao modelo. O Mestre
+ * narrava uma aventura pronta conhecendo apenas o titulo e a sinopse, ou seja,
+ * improvisava por cima de material que ja existia no banco.
+ */
+export function aventuraMd(aventura: Aventura, entidades: Entidade[] = []): string {
+  const linhas = [
+    '# aventura.md',
+    `Titulo: ${aventura.title}`,
+    `Premissa: ${fmt(aventura.synopsis)}`,
+  ]
+
+  if (aventura.plot_digest?.trim()) {
+    linhas.push('', '## a trama', aventura.plot_digest.trim())
+  }
+
+  const usaveis = entidades
+    .filter((e) => e.name?.trim())
+    .slice(0, MAX_ENTIDADES_NO_PROMPT)
+
+  if (usaveis.length) {
+    linhas.push(
+      '',
+      '## elenco e cenario',
+      'Use o que esta aqui antes de inventar. Nome inventado quando existe um na',
+      'lista quebra a continuidade da aventura.',
+    )
+
+    for (const kind of ORDEM_DE_ENTIDADE) {
+      const doTipo = usaveis.filter((e) => e.kind === kind)
+      if (!doTipo.length) continue
+
+      linhas.push('', `### ${ROTULO_DE_ENTIDADE[kind]}`)
+      for (const e of doTipo) {
+        // data guarda o que varia por tipo: atitude do NPC, saidas do local,
+        // efeito do item. Entra na mesma linha para nao inflar o prompt.
+        const detalhe = fmt(e.data)
+        linhas.push(
+          `- ${e.name}${e.summary ? `: ${e.summary}` : ''}${detalhe !== '—' ? ` (${detalhe})` : ''}`,
+        )
+      }
+    }
+
+    if (entidades.length > usaveis.length) {
+      linhas.push(
+        '',
+        `(${entidades.length - usaveis.length} entidades a mais existem e ficaram fora.)`,
+      )
+    }
+  }
+
+  return linhas.join('\n')
+}
+
 export function historicoRecenteMd(turnos: TurnoAnterior[]): string {
   if (!turnos.length) return '# historico_recente.md\n\n(A historia comeca agora.)'
 
@@ -133,7 +235,9 @@ export interface PartesDoPrompt {
 
 export function montarPrompt(args: {
   sistema: { name: string; rules_digest?: string | null }
-  aventura?: { title: string; synopsis: string | null } | null
+  aventura?: Aventura | null
+  /** Entidades da aventura. Vazio quando a campanha e livre. */
+  entidades?: Entidade[]
   personagem: Personagem
   mundo: EstadoMundo
   historico: TurnoAnterior[]
@@ -145,12 +249,7 @@ export function montarPrompt(args: {
     linhasEstaveis.push('', '## regras relevantes', args.sistema.rules_digest)
   }
   if (args.aventura) {
-    linhasEstaveis.push(
-      '',
-      '# aventura.md',
-      `Titulo: ${args.aventura.title}`,
-      `Premissa: ${fmt(args.aventura.synopsis)}`,
-    )
+    linhasEstaveis.push('', aventuraMd(args.aventura, args.entidades ?? []))
   }
 
   const acao =

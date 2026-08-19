@@ -4,10 +4,19 @@
 // A abertura e gerada pelo modelo porque a primeira cena define o tom da
 // campanha inteira — deixar isso como texto fixo empobreceria o jogo.
 
-import { erro, json, preflight } from '../_shared/http.ts'
-import { GeminiBlockedError, GeminiError, generateStructured } from '../_shared/gemini.ts'
-import { SYSTEM_INSTRUCTION } from '../_shared/context.ts'
-import { ABERTURA_SCHEMA, paresParaObjeto, type AberturaResponse } from '../_shared/schemas.ts'
+import { erro, erroDoModelo, json, preflight } from '../_shared/http.ts'
+import { generateStructured } from '../_shared/gemini.ts'
+import {
+  MAX_ENTIDADES_NO_PROMPT,
+  SYSTEM_INSTRUCTION,
+  aventuraMd,
+  type Entidade,
+} from '../_shared/context.ts'
+import {
+  ABERTURA_SCHEMA,
+  paresParaObjeto,
+  type AberturaResponse,
+} from '../_shared/schemas.ts'
 import {
   RespostaDeErro,
   autenticar,
@@ -57,17 +66,44 @@ Deno.serve(async (req) => {
       .select('id, name')
       .eq('id', systemId)
       .single()
-    if (!sistema) throw new RespostaDeErro(404, 'Sistema nao encontrado ou nao publicado.')
+    if (!sistema)
+      throw new RespostaDeErro(404, 'Sistema nao encontrado ou nao publicado.')
 
+    // A checagem de existencia passa pelo cliente do usuario de proposito: a
+    // policy exige aventura publicada, entao rascunho nao vira campanha.
     let aventura: { id: string; title: string; synopsis: string | null } | null = null
+    let plotDigest: string | null = null
+    let entidades: Entidade[] = []
+
     if (corpo.adventure_id) {
       const { data } = await ctx.comoUsuario
         .from('adventures')
         .select('id, title, synopsis')
         .eq('id', corpo.adventure_id)
         .single()
-      if (!data) throw new RespostaDeErro(404, 'Aventura nao encontrada ou nao publicada.')
+      if (!data)
+        throw new RespostaDeErro(404, 'Aventura nao encontrada ou nao publicada.')
       aventura = data
+
+      // plot_digest esta fora do grant do cliente; as entidades sao muitas.
+      // As duas leituras vao por service_role, depois de a policy ja ter
+      // confirmado que o usuario pode jogar esta aventura.
+      const [digestRes, entidadesRes] = await Promise.all([
+        ctx.comoServico
+          .from('adventures')
+          .select('plot_digest')
+          .eq('id', data.id)
+          .single(),
+        ctx.comoServico
+          .from('adventure_entities')
+          .select('kind, name, summary, data')
+          .eq('adventure_id', data.id)
+          .order('kind')
+          .limit(MAX_ENTIDADES_NO_PROMPT),
+      ])
+
+      plotDigest = digestRes.data?.plot_digest ?? null
+      entidades = (entidadesRes.data ?? []) as Entidade[]
     }
 
     // Digest fica fora do grant do cliente: lido com service_role.
@@ -119,7 +155,9 @@ Deno.serve(async (req) => {
       const contexto = [
         `# sistema.md\nSistema: ${sistema.name}`,
         digests?.rules_digest ? `\n## regras relevantes\n${digests.rules_digest}` : '',
-        aventura ? `\n# aventura.md\nTitulo: ${aventura.title}\nPremissa: ${aventura.synopsis ?? '—'}` : '',
+        aventura
+          ? `\n${aventuraMd({ ...aventura, plot_digest: plotDigest }, entidades)}`
+          : '',
       ].join('')
 
       const ficha = `# personagem.md\nNome: ${nome}\nConceito: ${conceito}\nHP: ${hpMax}/${hpMax}`
@@ -132,9 +170,16 @@ Deno.serve(async (req) => {
           { role: 'user', text: ficha },
           {
             role: 'user',
-            text:
-              '# turno_atual\nAbra a campanha. Estabeleca o lugar, o momento e uma tensao ' +
-              'imediata. Nao resuma a premissa: mostre a cena.',
+            // Com aventura pronta, a abertura tem de aterrissar DENTRO dela.
+            // Sem esta instrucao o modelo abre uma cena generica e a aventura
+            // escolhida so aparece alguns turnos depois, por acaso.
+            text: aventura
+              ? '# turno_atual\nAbra esta aventura. Comece no primeiro lugar da lista de ' +
+                'lugares, ou no que a trama indicar como ponto de partida, e coloque em ' +
+                'cena quem estiver la. Estabeleca a tensao inicial da aventura. Nao resuma ' +
+                'a premissa e nao antecipe reviravolta: mostre a cena.'
+              : '# turno_atual\nAbra a campanha. Estabeleca o lugar, o momento e uma tensao ' +
+                'imediata. Nao resuma a premissa: mostre a cena.',
           },
         ],
         responseSchema: ABERTURA_SCHEMA,
@@ -162,7 +207,10 @@ Deno.serve(async (req) => {
         model: resultado.model,
       })
 
-      await ctx.comoServico.from('campaigns').update({ last_turn_seq: 1 }).eq('id', campaignId)
+      await ctx.comoServico
+        .from('campaigns')
+        .update({ last_turn_seq: 1 })
+        .eq('id', campaignId)
 
       await ctx.comoServico.rpc('record_turn_tokens', {
         p_user: ctx.userId,
@@ -188,13 +236,8 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     if (e instanceof RespostaDeErro) return erro(req, e.message, e.status, e.extra)
-    if (e instanceof GeminiBlockedError) {
-      return erro(req, 'O provedor interrompeu a geracao da abertura. Tente outro conceito.', 422)
-    }
-    if (e instanceof GeminiError) {
-      console.error('gemini', e.status, e.message, e.detail)
-      return erro(req, 'Falha ao gerar a abertura.', 502)
-    }
+    const doModelo = erroDoModelo(req, e, 'gerar a abertura')
+    if (doModelo) return doModelo
     console.error('start-campaign', e)
     return erro(req, 'Erro inesperado ao abrir a campanha.', 500)
   }

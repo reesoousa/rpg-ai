@@ -29,6 +29,13 @@ const carregarNovaCampanha = async () => {
 
 export const router = createBrowserRouter(
   [
+    // Fora do AppShell: a criacao de campanha e um stepper de tela cheia, com
+    // cabecalho e rodape proprios. Dentro do shell ela dividiria espaco com a
+    // nav flutuante e com a largura de leitura da vitrine.
+    {
+      element: <RequireAuth />,
+      children: [{ path: '/campanha/nova', lazy: carregarNovaCampanha }],
+    },
     {
       element: <AppShell />,
       children: [
@@ -41,7 +48,6 @@ export const router = createBrowserRouter(
           element: <RequireAuth />,
           children: [
             { path: '/dashboard', lazy: carregarDashboard },
-            { path: '/campanha/nova', lazy: carregarNovaCampanha },
             { path: '/campanha/:id/jogar', lazy: carregarJogo },
             {
               path: '/perfil',
@@ -64,13 +70,23 @@ export const router = createBrowserRouter(
                 return { Component: AdminPage }
               },
             },
+            {
+              path: '/admin/sistema/:id',
+              lazy: async () => {
+                const { SystemPage } = await import('@/features/admin/SystemPage')
+                return { Component: SystemPage }
+              },
+            },
           ],
         },
 
         {
           path: '*',
           element: (
-            <PagePlaceholder title="Pagina nao encontrada" planned={['Voltar ao inicio']} />
+            <PagePlaceholder
+              title="Pagina nao encontrada"
+              planned={['Voltar ao inicio']}
+            />
           ),
         },
       ],

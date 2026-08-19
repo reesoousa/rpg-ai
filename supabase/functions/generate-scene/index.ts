@@ -16,8 +16,8 @@
 // Quota propria: imagem e cobrada por unidade, nao por token, entao o limite de
 // turnos nao a protege.
 
-import { erro, json, preflight } from '../_shared/http.ts'
-import { GeminiError, generateImage } from '../_shared/gemini.ts'
+import { erro, erroDoModelo, json, preflight } from '../_shared/http.ts'
+import { generateImage } from '../_shared/gemini.ts'
 import {
   RespostaDeErro,
   autenticar,
@@ -99,7 +99,11 @@ Deno.serve(async (req) => {
     } else {
       // --- cena nova: monta a partir do estado atual.
       const [mundoRes, turnoRes] = await Promise.all([
-        ctx.comoUsuario.from('world_state').select('*').eq('campaign_id', campaignId).single(),
+        ctx.comoUsuario
+          .from('world_state')
+          .select('*')
+          .eq('campaign_id', campaignId)
+          .single(),
         ctx.comoUsuario
           .from('turns')
           .select('id, seq, narrative')
@@ -109,7 +113,8 @@ Deno.serve(async (req) => {
       ])
 
       const mundo = mundoRes.data
-      if (!mundo) throw new RespostaDeErro(409, 'Esta campanha ainda nao tem estado de mundo.')
+      if (!mundo)
+        throw new RespostaDeErro(409, 'Esta campanha ainda nao tem estado de mundo.')
 
       const ultimo = turnoRes.data?.[0]
       if (ultimo) turnoAlvo = { id: ultimo.id, seq: ultimo.seq }
@@ -180,10 +185,8 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     if (e instanceof RespostaDeErro) return erro(req, e.message, e.status, e.extra)
-    if (e instanceof GeminiError) {
-      console.error('gemini-image', e.status, e.message, e.detail)
-      return erro(req, 'Falha ao gerar a imagem da cena.', 502)
-    }
+    const doModelo = erroDoModelo(req, e, 'gerar a imagem da cena')
+    if (doModelo) return doModelo
     console.error('generate-scene', e)
     return erro(req, 'Erro inesperado ao gerar a cena.', 500)
   }

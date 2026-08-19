@@ -20,9 +20,24 @@
 | Painel do mestre | Sistemas, aventuras e livros, com upload de capa |
 | Vitrine | Lista sistemas e aventuras publicados |
 | CI/CD | GitHub Actions publica no Pages a cada merge em `main` |
-| Testes | 20 de RLS, 28 do turno, 58 da base — todos contra Supabase local |
+| Testes | 20 de RLS, 33 do turno, 73 da base — todos contra Supabase local |
 
 ## Nao verificado com o Gemini real
+
+> Ha uma sonda para isto: `node scripts/probe-gemini.mjs`. Ela roda na maquina
+> do dono, com a chave no ambiente, e a saida e filtrada para nunca conter a
+> chave. Responde as tres duvidas abaixo com fato.
+>
+> O que mudou no cliente enquanto a resposta nao vem:
+> - o teto de saida padrao subiu de 2048 para 4096, porque thinking sai da
+>   MESMA cota do texto e o teto antigo podia estourar antes da resposta;
+> - `200 OK` com texto vazio deixou de virar "conteudo vazio" e passa a tentar
+>   a proxima variante de thinking, terminando em `GeminiSemSaidaError` com
+>   mensagem que diz o que aconteceu;
+> - toda falha do provedor chega ao app com o codigo de razao
+>   (`NOT_FOUND`, `RESOURCE_EXHAUSTED`, `INVALID_ARGUMENT`, ...) em vez de
+>   "Falha ao gerar" — ver `erroDoModelo` em `_shared/http.ts`.
+
 
 Todo o teste automatizado usa um **stub** que valida o payload mas nao chama a
 API. O que isso significa:
@@ -37,24 +52,39 @@ API. O que isso significa:
 3. **A qualidade da narrativa** e desconhecida. O stub devolve texto fixo; o
    `SYSTEM_INSTRUCTION` em `_shared/context.ts` nunca foi testado de verdade.
 
-## Lacunas de integracao (dados extraidos que ninguem usa)
+## Lacunas de integracao — FECHADAS
 
-Estas sao as mais importantes, porque parecem prontas e nao estao:
+As quatro lacunas de "dados extraidos que ninguem usa" foram ligadas, e cada
+uma tem teste que falha se a ligacao se romper:
 
-1. **`adventure_entities` nao entra no prompt.** A fabrica de campanhas extrai
-   locais, NPCs, itens, faccoes e eventos — e `play-turn` nunca le. O mestre
-   joga sem saber quem existe na aventura.
-2. **`plot_digest` nao entra no prompt.** Mesmo problema: a aventura e resumida
-   e o resumo fica parado no banco.
-3. **`suggested_actions` e ignorado pela UI.** A function devolve duas a quatro
-   acoes plausiveis por turno; a `ActionBar` nao as mostra.
-4. **Aventura nao entra na criacao de campanha.** `start-campaign` aceita
-   `adventure_id`, mas `NewCampaignPage` so deixa escolher o sistema.
+1. **`adventure_entities` entra no prompt** (`aventuraMd` em
+   `_shared/context.ts`, teto de 60 entidades). Coberto por `test-play-turn`
+   (`prompt leva as entidades da aventura`) e `test-base`.
+2. **`plot_digest` entra no prompt**, na secao `## a trama`.
+3. **`suggested_actions` aparece na `ActionBar`** como chips que enviam o turno
+   direto.
+4. **Aventura entra na criacao de campanha**: o stepper tem um passo dedicado, e
+   `start-campaign` usa uma instrucao de abertura diferente quando ha aventura,
+   para a primeira cena aterrissar dentro dela em vez de comecar generica.
+
+Duas coisas alem disso:
+
+- **Extracao de aventura a partir de PDF.** `extract-adventure` aceita
+  `source_pdf_path` (arquivo no bucket `rulebooks`, apagado depois de lido).
+  Antes so aceitava texto colado, o que na pratica inviabilizava usar um modulo
+  de aventura de verdade.
+- **Painel do mestre reorganizado**: uma tela por sistema, com identidade,
+  livro de regras e aventuras dentro. As abas "Aventuras" e "Livros" nao
+  existem mais. Um sistema publicado sem livro lido agora avisa na tela.
 
 ## Falta construir
 
 ### Alto valor
-- Ligar as quatro lacunas acima
+- **Confirmar a integracao com o Gemini real.** Rodar
+  `node scripts/probe-gemini.mjs` com a chave no ambiente: a sonda diz quais
+  modelos a chave alcanca, qual variante de thinking o `generateContent` aceita
+  e se `maxOutputTokens` sobra para o texto depois do raciocinio. Enquanto isso
+  nao roda, a causa das falhas de IA em producao e hipotese
 - **Paginacao do historico.** Hoje carrega os ultimos 40 turnos e para. Falta
   "carregar anterior" (sem virtualizacao, para nao quebrar selecao de texto)
 - **Pausar, finalizar e apagar campanha.** O `status` existe no banco e a policy
@@ -87,8 +117,11 @@ Estas sao as mais importantes, porque parecem prontas e nao estao:
       `supabase secrets set` sem passar por terceiros
 - [ ] **Teto de orcamento** no projeto Google (`projects/235032798011`). E o que
       transforma um vazamento catastrofico em um vazamento chato
-- [ ] **Docker Desktop quebrado** na maquina do dono. Nao bloqueia producao, mas
-      impede `pnpm db:test-rls`, `pnpm test:e2e` e `pnpm test:base`
+- [x] ~~**Docker Desktop quebrado**~~ — voltou a funcionar. Os tres conjuntos
+      rodam: 20 de RLS, 33 do turno, 73 da base. Atencao: `supabase start`
+      restaurou o banco de um backup DEFASADO, sem a migration de capas; se
+      aparecer `column systems.cover_path does not exist`, rode
+      `pnpm supabase db reset`
 
 ## Decisoes que nao devem ser revisitadas sem motivo
 

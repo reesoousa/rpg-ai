@@ -137,7 +137,10 @@ export const api = {
     }
   }) => invocar<RespostaDeAbertura>('start-campaign', dados),
 
-  wizard: (systemId: string, mensagens: Array<{ role: 'user' | 'model'; text: string }>) =>
+  wizard: (
+    systemId: string,
+    mensagens: Array<{ role: 'user' | 'model'; text: string }>,
+  ) =>
     invocar<RespostaDoWizard>('character-wizard', {
       system_id: systemId,
       messages: mensagens,
@@ -156,10 +159,14 @@ export const api = {
       publish: publicar,
     }),
 
-  extrairAventura: (adventureId: string, textoFonte?: string) =>
+  extrairAventura: (adventureId: string, fonte: { texto?: string; pdfPath?: string }) =>
     invocar<RespostaDeExtracao>('extract-adventure', {
       adventure_id: adventureId,
-      ...(textoFonte ? { source_text: textoFonte } : {}),
+      ...(fonte.pdfPath
+        ? { source_pdf_path: fonte.pdfPath }
+        : fonte.texto
+          ? { source_text: fonte.texto }
+          : {}),
     }),
 }
 
@@ -171,13 +178,22 @@ export interface RespostaDeIngestao {
   published: boolean
   file_deleted: boolean
   original_size_bytes: number
-  usage: { promptTokens: number; outputTokens: number; estimated_from_pages: number | null }
+  usage: {
+    promptTokens: number
+    outputTokens: number
+    estimated_from_pages: number | null
+  }
 }
 
 export interface RespostaDeExtracao {
   adventure_id: string
   plot_digest: string
+  /** Sinopse sugerida pelo modelo. Vem preenchida so quando estava vazia. */
+  synopsis: string | null
   entities_count: number
   entities_by_kind: Record<string, number>
   truncated: boolean
+  source: 'pdf' | 'texto'
+  pdf_bytes: number | null
+  pdf_deleted: boolean
 }

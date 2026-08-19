@@ -7,7 +7,7 @@ import { Card } from '@/components/ui/Card'
 import { getSupabase } from '@/lib/supabase'
 import { api, ApiError, type TurnType } from '@/lib/api'
 import { base64ParaBlob, guardarCena } from '@/lib/scene-cache'
-import { ActionBar } from './components/ActionBar'
+import { ActionBar, type Sugestao } from './components/ActionBar'
 import { TurnBlock, type Turn } from './components/TurnBlock'
 import { CharacterDrawer, type Ficha, type Mundo } from './components/CharacterDrawer'
 import { SceneImage } from './components/SceneImage'
@@ -30,6 +30,9 @@ export function GamePage() {
   const [gerandoCena, setGerandoCena] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [continueStreak, setContinueStreak] = useState(0)
+  // Vive no cliente e nao no banco: sugestao e do turno atual e nao vale
+  // guardar, ja que o proximo turno gera outras.
+  const [sugestoes, setSugestoes] = useState<Sugestao[]>([])
   const fimRef = useRef<HTMLDivElement>(null)
 
   const jogo = useQuery({
@@ -73,9 +76,11 @@ export function GamePage() {
     setEnviando(true)
     setErro(null)
     setContinueStreak((n) => (tipo === 'continue' ? n + 1 : 0))
+    setSugestoes([])
 
     try {
-      await api.jogarTurno(campaignId, tipo, texto)
+      const r = await api.jogarTurno(campaignId, tipo, texto)
+      setSugestoes(r.suggested_actions ?? [])
       // Recarrega do banco em vez de montar o turno no cliente: o banco e a
       // fonte da verdade do estado, e o delta ja foi aplicado la.
       await qc.invalidateQueries({ queryKey: ['jogo', campaignId] })
@@ -115,7 +120,7 @@ export function GamePage() {
     return (
       <div className="space-y-4" aria-busy="true">
         <div className="bg-surface-1 h-6 w-48 animate-pulse rounded-full" />
-        <div className="bg-surface-1 h-40 animate-pulse rounded-card" />
+        <div className="bg-surface-1 rounded-card h-40 animate-pulse" />
       </div>
     )
   }
@@ -124,7 +129,12 @@ export function GamePage() {
     return (
       <Card>
         <p className="text-danger text-ui">Nao foi possivel abrir esta campanha.</p>
-        <Button variant="subtle" size="md" onClick={() => jogo.refetch()} className="mt-4">
+        <Button
+          variant="subtle"
+          size="md"
+          onClick={() => jogo.refetch()}
+          className="mt-4"
+        >
           Tentar de novo
         </Button>
       </Card>
@@ -135,7 +145,7 @@ export function GamePage() {
     <div className="space-y-8">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-text-muted truncate font-mono text-ui-sm">
+          <p className="text-text-muted text-ui-sm truncate font-mono">
             {jogo.data?.mundo?.current_location ?? '—'}
           </p>
           <h1 className="text-title truncate">{jogo.data?.titulo}</h1>
@@ -207,6 +217,7 @@ export function GamePage() {
           onSubmit={jogar}
           disabled={enviando || gerandoCena}
           continueStreak={continueStreak}
+          sugestoes={sugestoes}
         />
       </div>
 

@@ -7,6 +7,8 @@
 // Uso: node scripts/test-play-turn.mjs
 // Requer: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY no ambiente.
 
+import { readFileSync } from 'node:fs'
+
 const URL_BASE = process.env.SUPABASE_URL
 const ANON = process.env.SUPABASE_ANON_KEY
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -18,6 +20,20 @@ if (!URL_BASE || !ANON || !SERVICE) {
 
 const EMAIL = 'jogador.e2e@teste.local'
 const SENHA = 'senha-de-teste-12345'
+
+/** Todo o texto que a function enviou ao modelo na ultima chamada. */
+function promptEnviado() {
+  const caminho = process.env.STUB_LOG ?? 'stub-last-request.json'
+  try {
+    const log = JSON.parse(readFileSync(caminho, 'utf-8'))
+    return (log?.body?.contents ?? [])
+      .flatMap((c) => c.parts ?? [])
+      .map((pt) => pt.text ?? '')
+      .join('\n')
+  } catch {
+    return ''
+  }
+}
 
 let passou = 0
 let falhou = 0
@@ -69,6 +85,15 @@ async function setup() {
   if (!login.ok) throw new Error(`falha no login: ${login.status} ${await login.text()}`)
   const { access_token: token, user } = await login.json()
 
+  // Reset de quota. O teste termina baixando daily_turn_limit para 1 para
+  // exercitar o 429; sem desfazer isso aqui, a segunda execucao do arquivo
+  // falha inteira no primeiro turno e o motivo nao fica obvio.
+  await svc(`/rest/v1/profiles?id=eq.${user.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ daily_turn_limit: 40 }),
+  })
+  await svc(`/rest/v1/usage_daily?user_id=eq.${user.id}`, { method: 'DELETE' })
+
   const sistema = await svc('/rest/v1/systems', {
     method: 'POST',
     body: JSON.stringify({
@@ -80,11 +105,48 @@ async function setup() {
   })
   const [sistemaRow] = await sistema.json()
 
+  // Aventura com trama e elenco. A campanha aponta para ela porque o que
+  // interessa testar e se esse material CHEGA ao prompt do turno — durante
+  // muito tempo ele era extraido, gravado e nunca lido.
+  const aventura = await svc('/rest/v1/adventures', {
+    method: 'POST',
+    body: JSON.stringify({
+      system_id: sistemaRow.id,
+      slug: `aventura-e2e-${Date.now()}`,
+      title: 'O Sino de Vale Cinza',
+      synopsis: 'Um sino toca sozinho todas as noites.',
+      plot_digest: 'Quem toca o sino e a irma do ferreiro, morta no inverno passado.',
+      is_published: true,
+    }),
+  })
+  const [aventuraRow] = await aventura.json()
+
+  await svc('/rest/v1/adventure_entities', {
+    method: 'POST',
+    body: JSON.stringify([
+      {
+        adventure_id: aventuraRow.id,
+        kind: 'npc',
+        name: 'Ferreiro Kalen',
+        summary: 'Bebe para nao ouvir o sino.',
+        data: { atitude: 'evasivo' },
+      },
+      {
+        adventure_id: aventuraRow.id,
+        kind: 'location',
+        name: 'Campanario Rachado',
+        summary: 'Onde o sino fica.',
+        data: { saidas: 'praca, sacristia' },
+      },
+    ]),
+  })
+
   const campanha = await svc('/rest/v1/campaigns', {
     method: 'POST',
     body: JSON.stringify({
       user_id: user.id,
       system_id: sistemaRow.id,
+      adventure_id: aventuraRow.id,
       title: 'Campanha E2E',
     }),
   })
@@ -128,69 +190,146 @@ async function main() {
       authorization: `Bearer ${token}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ campaign_id: campaignId, turn_type: 'act', player_input: 'Entro na taverna.' }),
+    body: JSON.stringify({
+      campaign_id: campaignId,
+      turn_type: 'act',
+      player_input: 'Entro na taverna.',
+    }),
   })
   const corpo = await res.json().catch(() => ({}))
 
-  verifica('responde 200', res.status === 200, `status ${res.status}: ${JSON.stringify(corpo).slice(0, 300)}`)
-  verifica('devolve narrativa', typeof corpo.narrative === 'string' && corpo.narrative.length > 50)
+  verifica(
+    'responde 200',
+    res.status === 200,
+    `status ${res.status}: ${JSON.stringify(corpo).slice(0, 300)}`,
+  )
+  verifica(
+    'devolve narrativa',
+    typeof corpo.narrative === 'string' && corpo.narrative.length > 50,
+  )
   verifica('devolve seq 1', corpo.seq === 1, `seq=${corpo.seq}`)
-  verifica('devolve acoes sugeridas', Array.isArray(corpo.suggested_actions) && corpo.suggested_actions.length === 2)
-  verifica('aplica dano na ficha (20 - 3)', corpo.character?.hp_current === 17, `hp=${corpo.character?.hp_current}`)
+  verifica(
+    'devolve acoes sugeridas',
+    Array.isArray(corpo.suggested_actions) && corpo.suggested_actions.length === 2,
+  )
+  verifica(
+    'aplica dano na ficha (20 - 3)',
+    corpo.character?.hp_current === 17,
+    `hp=${corpo.character?.hp_current}`,
+  )
   verifica(
     'avanca o relogio do mundo em 12 min',
     corpo.world_clock === '2000-01-01T08:12:00.000Z',
     `clock=${corpo.world_clock}`,
   )
-  verifica('conta thinking como output', corpo.usage?.outputTokens === 640, `out=${corpo.usage?.outputTokens}`)
+  verifica(
+    'conta thinking como output',
+    corpo.usage?.outputTokens === 640,
+    `out=${corpo.usage?.outputTokens}`,
+  )
+
+  // --- o prompt precisa carregar a aventura, nao so o sistema
+  const prompt = promptEnviado()
+  verifica('prompt leva as regras do sistema', prompt.includes('Rolagens em 2d6'))
+  verifica('prompt leva a aventura', prompt.includes('# aventura.md'))
+  verifica(
+    'prompt leva o plot_digest',
+    prompt.includes('irma do ferreiro'),
+    prompt.slice(0, 300),
+  )
+  verifica(
+    'prompt leva as entidades da aventura',
+    prompt.includes('Ferreiro Kalen') && prompt.includes('Campanario Rachado'),
+  )
+  verifica(
+    'prompt leva os campos de data da entidade',
+    prompt.includes('saidas: praca, sacristia'),
+  )
   verifica('reporta quota restante', typeof corpo.quota?.turns_remaining === 'number')
 
   console.log('\n=== Estado gravado no banco ===')
-  const turnos = await (await svc(`/rest/v1/turns?campaign_id=eq.${campaignId}&select=*`)).json()
+  const turnos = await (
+    await svc(`/rest/v1/turns?campaign_id=eq.${campaignId}&select=*`)
+  ).json()
   verifica('turno persistido', turnos.length === 1)
   verifica('narrativa gravada como markdown cru', turnos[0]?.narrative?.includes('**'))
   verifica('state_delta gravado', turnos[0]?.state_delta?.hp_change === -3)
-  verifica('modelo registrado', turnos[0]?.model === 'gemini-3.7-flash', `model=${turnos[0]?.model}`)
+  verifica(
+    'modelo registrado',
+    turnos[0]?.model === 'gemini-3.7-flash',
+    `model=${turnos[0]?.model}`,
+  )
   verifica(
     'tokens de entrada registrados',
     turnos[0]?.tokens_input === 3812,
     `in=${turnos[0]?.tokens_input}`,
   )
 
-  const mundo = await (await svc(`/rest/v1/world_state?campaign_id=eq.${campaignId}&select=*`)).json()
+  const mundo = await (
+    await svc(`/rest/v1/world_state?campaign_id=eq.${campaignId}&select=*`)
+  ).json()
   verifica('local atualizado', mundo[0]?.current_location === 'Taverna do Cao Torto')
   verifica('npcs atualizados', mundo[0]?.present_npcs?.length === 2)
   verifica('flag persistida', mundo[0]?.flags?.mulher_sabe_seu_nome === 'sim')
 
-  const ficha = await (await svc(`/rest/v1/characters?campaign_id=eq.${campaignId}&select=*`)).json()
+  const ficha = await (
+    await svc(`/rest/v1/characters?campaign_id=eq.${campaignId}&select=*`)
+  ).json()
   verifica('item adicionado ao inventario', ficha[0]?.inventory?.includes('carta selada'))
   verifica('inventario manteve o que ja tinha', ficha[0]?.inventory?.includes('adaga'))
 
-  const campanhas = await (await svc(`/rest/v1/campaigns?id=eq.${campaignId}&select=last_turn_seq`)).json()
+  const campanhas = await (
+    await svc(`/rest/v1/campaigns?id=eq.${campaignId}&select=last_turn_seq`)
+  ).json()
   verifica('last_turn_seq avancou', campanhas[0]?.last_turn_seq === 1)
 
-  const uso = await (await svc(`/rest/v1/usage_daily?user_id=eq.${userId}&select=*`)).json()
+  const uso = await (
+    await svc(`/rest/v1/usage_daily?user_id=eq.${userId}&select=*`)
+  ).json()
   verifica('quota consumida', uso[0]?.turns_count === 1, `turns=${uso[0]?.turns_count}`)
-  verifica('tokens contabilizados', uso[0]?.tokens_output === 850, `out=${uso[0]?.tokens_output}`)
+  verifica(
+    'tokens contabilizados',
+    uso[0]?.tokens_output === 850,
+    `out=${uso[0]?.tokens_output}`,
+  )
 
   console.log('\n=== Validacao de entrada ===')
   const casos = [
-    { nome: 'recusa turn_type invalido', body: { campaign_id: campaignId, turn_type: 'dancar' }, status: 400 },
-    { nome: 'recusa speak sem texto', body: { campaign_id: campaignId, turn_type: 'speak' }, status: 400 },
+    {
+      nome: 'recusa turn_type invalido',
+      body: { campaign_id: campaignId, turn_type: 'dancar' },
+      status: 400,
+    },
+    {
+      nome: 'recusa speak sem texto',
+      body: { campaign_id: campaignId, turn_type: 'speak' },
+      status: 400,
+    },
     { nome: 'recusa sem campaign_id', body: { turn_type: 'continue' }, status: 400 },
     {
       nome: 'recusa campanha inexistente',
-      body: { campaign_id: '00000000-0000-0000-0000-000000000000', turn_type: 'continue' },
+      body: {
+        campaign_id: '00000000-0000-0000-0000-000000000000',
+        turn_type: 'continue',
+      },
       status: 404,
     },
   ]
   for (const caso of casos) {
     const r = await fetch(`${URL_BASE}/functions/v1/play-turn`, {
       method: 'POST',
-      headers: { apikey: ANON, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      headers: {
+        apikey: ANON,
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
       body: JSON.stringify(caso.body),
     })
-    verifica(caso.nome, r.status === caso.status, `esperava ${caso.status}, veio ${r.status}`)
+    verifica(
+      caso.nome,
+      r.status === caso.status,
+      `esperava ${caso.status}, veio ${r.status}`,
+    )
   }
 
   console.log('\n=== Sem autenticacao ===')
@@ -208,11 +347,19 @@ async function main() {
   })
   const estourado = await fetch(`${URL_BASE}/functions/v1/play-turn`, {
     method: 'POST',
-    headers: { apikey: ANON, authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: {
+      apikey: ANON,
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
     body: JSON.stringify({ campaign_id: campaignId, turn_type: 'continue' }),
   })
   const corpoEstourado = await estourado.json().catch(() => ({}))
-  verifica('responde 429 ao estourar a quota', estourado.status === 429, `status ${estourado.status}`)
+  verifica(
+    'responde 429 ao estourar a quota',
+    estourado.status === 429,
+    `status ${estourado.status}`,
+  )
   verifica(
     'mensagem explica o limite',
     /Limite diario/.test(corpoEstourado.error ?? ''),

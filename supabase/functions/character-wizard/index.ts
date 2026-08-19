@@ -7,8 +7,8 @@
 // NOTA: o contrato desta function e o unico que provavelmente vai mudar quando
 // a UI existir — o formato do chat depende do fluxo de tela.
 
-import { erro, json, preflight } from '../_shared/http.ts'
-import { GeminiBlockedError, GeminiError, generateStructured } from '../_shared/gemini.ts'
+import { erro, erroDoModelo, json, preflight } from '../_shared/http.ts'
+import { generateStructured } from '../_shared/gemini.ts'
 import { WIZARD_SCHEMA, type WizardResponse } from '../_shared/schemas.ts'
 import {
   RespostaDeErro,
@@ -73,7 +73,8 @@ Deno.serve(async (req) => {
       .select('id, name')
       .eq('id', systemId)
       .single()
-    if (!sistema) throw new RespostaDeErro(404, 'Sistema nao encontrado ou nao publicado.')
+    if (!sistema)
+      throw new RespostaDeErro(404, 'Sistema nao encontrado ou nao publicado.')
 
     const { data: digests } = await ctx.comoServico
       .from('systems')
@@ -139,13 +140,8 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     if (e instanceof RespostaDeErro) return erro(req, e.message, e.status, e.extra)
-    if (e instanceof GeminiBlockedError) {
-      return erro(req, 'O provedor interrompeu a resposta. Tente descrever de outra forma.', 422)
-    }
-    if (e instanceof GeminiError) {
-      console.error('gemini', e.status, e.message, e.detail)
-      return erro(req, 'Falha ao consultar o assistente.', 502)
-    }
+    const doModelo = erroDoModelo(req, e, 'consultar o assistente')
+    if (doModelo) return doModelo
     console.error('character-wizard', e)
     return erro(req, 'Erro inesperado no wizard.', 500)
   }

@@ -1,20 +1,40 @@
 import { useState } from 'react'
 import { ArrowRight, MessageSquare, Play, Zap } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { cn } from '@/lib/utils'
 
 export type TurnType = 'speak' | 'act' | 'continue'
+
+export interface Sugestao {
+  type: 'speak' | 'act'
+  label: string
+}
 
 interface ActionBarProps {
   onSubmit: (type: TurnType, text?: string) => void
   disabled?: boolean
   /** Quantos `continue` seguidos ja aconteceram. */
   continueStreak: number
+  /**
+   * Acoes plausiveis para este turno, vindas do modelo.
+   *
+   * A function ja devolvia isto desde o inicio e a barra ignorava — o jogador
+   * encarava um campo de texto vazio a cada turno, sem pista do que o mundo
+   * permite. Sao atalhos, nao um menu: digitar continua sendo o caminho
+   * principal.
+   */
+  sugestoes?: Sugestao[]
 }
 
 /** Depois disso, pedir confirmacao: o botao e barato de apertar, a chamada nao. */
 const CONTINUE_STREAK_LIMIT = 3
 
-export function ActionBar({ onSubmit, disabled, continueStreak }: ActionBarProps) {
+export function ActionBar({
+  onSubmit,
+  disabled,
+  continueStreak,
+  sugestoes = [],
+}: ActionBarProps) {
   const [mode, setMode] = useState<Exclude<TurnType, 'continue'>>('act')
   const [text, setText] = useState('')
   const [confirmingContinue, setConfirmingContinue] = useState(false)
@@ -37,6 +57,33 @@ export function ActionBar({ onSubmit, disabled, continueStreak }: ActionBarProps
 
   return (
     <div className="space-y-3">
+      {/* Sugestoes acima dos modos: entram como atalho para o campo de texto,
+          nao como um quarto botao de comando. */}
+      {sugestoes.length > 0 && !disabled && (
+        <div className="flex flex-wrap gap-2" aria-label="Acoes sugeridas">
+          {sugestoes.map((s, i) => (
+            <button
+              key={`${s.type}-${i}`}
+              type="button"
+              onClick={() => {
+                setMode(s.type)
+                onSubmit(s.type, s.label)
+              }}
+              className={cn(
+                'bg-surface-1 hover:bg-surface-2 shadow-1 rounded-full',
+                'text-ui-sm px-4 py-2 text-left',
+                'transition-colors duration-150 ease-out',
+              )}
+            >
+              <span className="text-text-muted font-mono">
+                {s.type === 'speak' ? 'dizer' : 'fazer'}
+              </span>{' '}
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-2">
         <Button
           variant={mode === 'speak' ? 'primary' : 'subtle'}

@@ -101,7 +101,29 @@ pnpm test:base    # start-campaign, wizard, ingest, extract, scene
 ```
 
 O stub responde no formato do Gemini **e valida o payload** que a function
-enviou: safety settings, `responseSchema` e a ordem das partes do prompt.
+enviou: safety settings, `responseSchema` e a ordem das partes do prompt. Os
+testes tambem afirmam sobre o prompt REALMENTE ENVIADO, lendo
+`stub-last-request.json` — foi assim que a aventura passou meses sendo extraida
+para o banco sem nunca chegar ao modelo: a resposta vinha 200 e ninguem olhava
+o que tinha ido.
+
+Se o banco local vier de um backup defasado (sintoma: `column
+systems.cover_path does not exist`), reaplique as migrations:
+
+```bash
+pnpm supabase db reset
+```
+
+O stub nao chama a API. Para saber o que a API REAL aceita — quais modelos a
+chave alcanca, qual campo de thinking o `generateContent` entende, se
+`maxOutputTokens` sobra para o texto depois do raciocinio:
+
+```bash
+node scripts/probe-gemini.mjs
+```
+
+A chave sai do ambiente (`GEMINI_API_KEY`) e a saida e filtrada: nenhuma linha
+dela contem a chave. Nao existe caminho em que ela entre em arquivo ou commit.
 
 ## IA — decisoes de custo
 
